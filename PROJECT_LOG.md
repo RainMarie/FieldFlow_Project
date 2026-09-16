@@ -163,9 +163,9 @@
 - `def on_global_date_selected(e):`
 - `def trigger_date_picker(target_control):`
 - `def get_tech_options():`
-- `def open_service_request_for_project(proj_record):`
-- `def open_service_ticket_detail(req_data):`
-- `def open_edit_project_dialog(proj_row):`
+- `def get_contractor_options():`
+- `def get_location_options():`
+- `def get_salesperson_options():`
 
 ### 📄 calendar_component.py
 **Defined Functions/Classes:**
@@ -187,9 +187,11 @@
 - `def calculate_ticket_progress(status_string: str) -> tuple[str, str]:`
 - `def build_project_image_control(photo_url_or_path: str, height: int = 120) -> ft.Control:`
 - `def build_project_card(`
+- `def handle_service_request_click(e):`
+- `def handle_drive_click(e):`
+- `def handle_edit_click(e):`
 - `def build_standard_ticket_card(`
-- `def build_site_asset_card(`
-- `def build_visit_history_card(`
+- `def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_action=None) -> ft.Container:`
 
 ### 📄 check_my_db.py
 **Defined Functions/Classes:**
@@ -203,14 +205,14 @@
 **Defined Functions/Classes:**
 - `def build_image_control(photo_url_or_path: str, height: int = 180) -> ft.Control:`
 - `def build_project_detail_modal(`
-- `def on_photo_url_change(e):`
-- `def load_project_assets(job_number):`
-- `def load_project_visit_history(job_number):`
-- `def load_project_drive_documents(drive_id):`
-- `def populate_project_data(proj_row_tuple: tuple):`
-- `def add_new_asset_to_project(e):`
-- `def save_project_edits(e):`
+- `def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):`
+- `def on_photo_picked(e: ft.FilePickerResultEvent):`
+- `def on_docs_picked(e: ft.FilePickerResultEvent):`
+- `def populate_project_data(proj_data, contractor_options=None, location_options=None, sales_options=None):`
+- `def save_project_detail_edits(e):`
 - `def build_ticket_detail_modal(`
+- `def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):`
+- `def populate_ticket_data(req_data: dict, dispatch_data: dict = None):`
 
 ### 📄 form_sandbox.py
 **Defined Functions/Classes:**
@@ -230,12 +232,12 @@
 - `def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
 - `def on_photo_picked(e: ft.FilePickerResultEvent):`
 - `def on_docs_picked(e: ft.FilePickerResultEvent):`
+- `def clear_form(e=None):`
 - `def submit_project_creation(e):`
 - `def build_asset_registration_tool(`
-- `def simulate_asset_photo_capture(e):`
-- `def handle_add_asset_action():`
-- `def execute_serialized_integrity_lookup(e):`
 - `def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
+- `def submit_part(e):`
+- `def build_manufacturer_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
 
 ### 📄 main.py
 **Defined Functions/Classes:**

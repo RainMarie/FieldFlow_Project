@@ -18,6 +18,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Designated Admin Email address granted Editor (writer) rights on created folders
 ADMIN_EMAIL = "service@tbcotampaservice.com"
 
+# Target Google Shared Drive Parent Folder ID
+SHARED_DRIVE_PARENT_ID = os.getenv("SHARED_DRIVE_PARENT_ID", "0AFT7nUPO-vWvUk9PVA")
+
 
 def get_drive_service():
     """
@@ -42,7 +45,7 @@ def get_drive_service():
 
 def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str, str]:
     """
-    Creates a Parent Google Drive folder titled '123456XX - Project Name',
+    Creates a Parent Google Drive folder titled '123456XX - Project Name' inside the Shared Drive,
     grants Admin Editor access to service@tbcotampaservice.com, and automatically 
     creates a child 'registration' subfolder inside it.
     """
@@ -58,14 +61,16 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
         }
 
     try:
-        # 1. Create Parent Project Folder
+        # 1. Create Parent Project Folder inside Target Shared Drive
         parent_metadata = {
             'name': folder_title,
-            'mimeType': 'application/vnd.google-apps.folder'
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [SHARED_DRIVE_PARENT_ID]
         }
         parent_folder = service.files().create(
             body=parent_metadata,
-            fields='id, webViewLink'
+            fields='id, webViewLink',
+            supportsAllDrives=True
         ).execute()
 
         parent_id = parent_folder.get('id')
@@ -73,7 +78,12 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
 
         # 2a. Grant Read Permissions on Parent Folder for Link Holders
         user_permission = {'type': 'anyone', 'role': 'reader'}
-        service.permissions().create(fileId=parent_id, body=user_permission, fields='id').execute()
+        service.permissions().create(
+            fileId=parent_id,
+            body=user_permission,
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
 
         # 2b. Grant Editor (writer) Control to Admin Email silently
         admin_permission = {
@@ -85,7 +95,8 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
             fileId=parent_id,
             body=admin_permission,
             fields='id',
-            sendNotificationEmail=False
+            sendNotificationEmail=False,
+            supportsAllDrives=True
         ).execute()
 
         # 3. Create Nested 'registration' Child Subfolder Inside Parent Folder
@@ -94,12 +105,16 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
             'mimeType': 'application/vnd.google-apps.folder',
             'parents': [parent_id]
         }
-        reg_folder = service.files().create(body=reg_metadata, fields='id').execute()
+        reg_folder = service.files().create(
+            body=reg_metadata,
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
         reg_id = reg_folder.get('id')
 
-        logging.info(f"✅ Created Parent Project Folder: '{folder_title}' (ID: {parent_id})")
-        logging.info(f"👤 Granted Editor control to: {ADMIN_EMAIL}")
-        logging.info(f"📁 Created Child Subfolder: 'registration' (ID: {reg_id})")
+        logging.info(f"Created Parent Project Folder in Shared Drive: '{folder_title}' (ID: {parent_id})")
+        logging.info(f"Granted Editor control to: {ADMIN_EMAIL}")
+        logging.info(f"Created Child Subfolder: 'registration' (ID: {reg_id})")
 
         return {
             "drive_id": parent_id,
@@ -139,11 +154,12 @@ def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[
                 uploaded_file = service.files().create(
                     body=file_metadata,
                     media_body=media,
-                    fields='id'
+                    fields='id',
+                    supportsAllDrives=True
                 ).execute()
 
                 uploaded_file_ids.append(uploaded_file.get('id'))
-                logging.info(f"📄 Uploaded '{filename}' to Drive Folder ID '{folder_id}'.")
+                logging.info(f"Uploaded '{filename}' to Drive Folder ID '{folder_id}'.")
             except Exception as e:
                 logging.error(f"Failed to upload file '{path}' to Drive: {e}")
 
@@ -206,7 +222,7 @@ Tom Barrow Company
         server.login(smtp_user, smtp_pass)
         server.sendmail(msg['From'], [requestor_email], msg.as_string())
         server.quit()
-        logging.info(f"📧 Confirmation email dispatched to {requestor_email}.")
+        logging.info(f"Confirmation email dispatched to {requestor_email}.")
         return True
     except Exception as e:
         logging.error(f"Failed to send confirmation email: {e}")
@@ -350,11 +366,13 @@ def list_files_in_drive_folder(folder_id: str) -> List[Dict[str, str]]:
         results = service.files().list(
             q=query,
             spaces='drive',
-            fields='files(id, name, webViewLink, mimeType)'
+            fields='files(id, name, webViewLink, mimeType)',
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         files = results.get('files', [])
-        logging.info(f"📂 Retrieved {len(files)} file(s) from Drive folder ID '{folder_id}'.")
+        logging.info(f"Retrieved {len(files)} file(s) from Drive folder ID '{folder_id}'.")
         return files
     except Exception as e:
         logging.error(f"Error fetching files from Drive folder {folder_id}: {e}")

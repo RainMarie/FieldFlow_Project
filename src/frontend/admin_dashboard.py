@@ -302,7 +302,7 @@ def main(page: ft.Page):
             intake_form_widget.populate_data(proj_record)
 
         intake_modal.open = True
-        show_toast_local(f"📋 Initiating Service Request for Job #{job_num}", kind="info")
+        show_toast_local(f"Initiating Service Request for Job #{job_num}", kind="info")
         page.update()
 
     project_form_widget = build_project_creation_form(
@@ -404,7 +404,7 @@ def main(page: ft.Page):
             if db is not None:
                 db.collection("intake_ledger").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
 
-            show_toast_local(f"🚀 Dispatched Job #{job_num} to {selected_tech}!", kind="success")
+            show_toast_local(f"Dispatched Job #{job_num} to {selected_tech}!", kind="success")
             load_live_triage_feed()
             refresh_calendar_fn()
             execute_live_search(None)
