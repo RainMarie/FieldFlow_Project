@@ -1,0 +1,34 @@
+UI/X
+
+1. IMPLEMENTED & WORKING
+UI Components & Viewport Governance: Fully functional Flet cross-platform front-end frameworks utilizing a high-contrast dark theme language. Includes working responsive viewport routers (app.py, main.py) that enforce role-based access rules, a 3-column workstation office cockpit layout (admin_dashboard.py, desktop_sandbox.py), a streamlined mobile technician field client shell (mobile_suite.py, form_sandbox.py), and a 50/50 split viewport workspace desk containing an embedded manufacturer web link tool layout (sidecar_portal.py).
+
+Database Models & Infrastructure Caching: Active 14-table local relational schema manager (db_manager.py) built with strict SQLite constraints (PRAGMA foreign_keys = ON;) and Write-Ahead Logging (WAL) concurrency tracking. Google Cloud Firestore NoSQL cloud database configurations are established with embedded cryptographic credential handling (WebSafeCredentialManager) using AES-256 Fernet in-memory extraction loops.
+
+Asynchronous Engine Operations:
+
+Background worker countdown threads with interactive input focus focus-intercepts acting as form validation emergency brakes (app.py, mobile_suite.py).
+
+Google Calendar outbound sync manager and inbound listener loops (calendar_manager.py, calendar_listener.py) utilizing a cryptographic Last_Mutation_Token sequence to act as infinite loop circuit breakers.
+
+Google Drive background folder scanner handlers (drive_listener.py) triggering simultaneous automated cloud and local database state alterations.
+
+Dual-profile background media optimization pipelines (media_processor.py) running detached Pillow compression schemes for Profile A text legibility and Profile B grayscale receipt rendering.
+
+Internal Domain Notification insulation filters (sales_digest.py, folder_gate.py) compiling batched daily telemetry payloads for exclusive internal corporate distribution (MidnightSalesDigest).
+
+Automated maintenance handlers executing serverless rolling cleanups (7-Day Local Cache Sweep).
+
+2. IN PROGRESS / INCOMPLETE
+Static Viewport Placeholders: The Projects Registry and Contractors Directory directories inside the office dashboards currently render static data text boxes ("Active Data Matrices Staged") rather than pulling live dynamically bound database rows.
+
+Unbound Core UI Actions: Interactive dispatch conversion controls—such as the Confirm Dispatch Allocation action buttons—lack transactional click handlers or data execution blocks to commit changes to the database layer.
+
+Hardcoded API Stubs: Document production structures (template_factory.py) utilize dead-end placeholder variables (YOUR_MASTER_GOOGLE_DOC_TEMPLATE_ID_HERE), and integration architectures use local test harnesses (AutomationTestHarness) to simulate live cloud-to-local event transitions.
+
+3. CURRENT CODESIDE BUGS & BLOCKERS
+Syntax/Indentation Error Block (app.py): The isolated development fallback block contains critical indentation alignment errors under the except ImportError: declaration. The nested classes MockDatabaseManager and MockConnection share illegal vertical indentation lines, throwing an immediate runtime crash on initial script parsing.
+
+Flet Direct Style Mutation Crash (mobile_suite.py, form_sandbox.py): The submission sequence logic incorrectly attempts to modify UI appearance parameters by assigning values directly to button style objects (e.g., submit_button.style.bgcolor = ... and submit_button.style.color = ...). Flet does not support this type of state mutation on an active instance; it will throw an unhandled AttributeError runtime crash when buttons switch states.
+
+Import Context Discrepancies: Inconsistent architectural path mappings exist between duplicate internal modules. Files like folder_gate.py attempt local script imports (from db_manager import ...), whereas sibling utilities like sales_digest.py require fully qualified directory packages (from src.backend.db_manager import ...). This discrepancy will cause execution environments to fail with ModuleNotFoundError depending on how the runtime context is instantiated.

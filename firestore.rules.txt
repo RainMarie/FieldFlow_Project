@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Security Gate: Verifies user is authenticated, exists in Table 4, and is Active
+    function isWhitelisted() {
+      return request.auth != null 
+        && exists(/databases/$(database)/documents/users/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.active_status == true;
+    }
+
+   // 1. Users / Staff Collection (Table 4)
+    match /users/{email} {
+      allow read: if request.auth != null; // Required for first-time login validation loops
+      allow write: if request.auth != null 
+        && exists(/databases/$(database)/documents/users/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/users/$(request.auth.token.email)).data.admin_flag == true;
+    }
+
+    // 2. Projects Collection (Combines Tables 1, 2, 3)
+    match /projects/{tbc_job_number} {
+      allow read: if isWhitelisted();
+      // Absolute Gate: Rejects creation/edits if the project ID is not exactly an 8-digit identifier
+      allow write: if isWhitelisted() && tbc_job_number.matches('^[0-9]{8}$');
+    }
+
+    // 3. Dispatches & Reports Collection (Combines Tables 6, 7, 8, 9)
+    match /dispatches/{job_id} {
+      allow read: if isWhitelisted();
+      allow write: if isWhitelisted(); // Open to Whitelisted Techs & Admins for the Field-Wins Engine
+    }
+
+    // 4. Inventory / Truck Stock Collection (Combines Tables 10, 11)
+    match /inventory/{item_id} {
+      allow read: if isWhitelisted();
+      allow write: if isWhitelisted();
+    }
+    
+  }
+}

@@ -1,0 +1,117 @@
+﻿🏁 Phase 1: The MVP Core (Cloud Foundations & Dispatch Essentials)
+Focus: Deploying the cloud environment, standing up the central desktop dispatch room, and launching the mobile daily job feed with true offline support.
+🛠️ Track 1: Architecture & Foundations (ARCH)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	ARCH-01
+	Design Firestore NoSQL Document Schemas for the 11 core tables (contractors, projects, contacts, users, assets, jobs, reports, labor_travel, parts_master, truck_inventory) and 1 standalone document collection (intake_ledger). Establish relational integrity using the Tom Barrow Company Job Number as the root structural anchor.
+	The Ultimate Digital Filing System: Creates a lightning-fast cloud database structure where equipment and customer files are neatly grouped and instantly searchable.
+	🧠 Track 2: Back-End Infrastructure (BE)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	BE-01
+	Initialize src/backend/db_manager.py with Firebase Admin SDK connection protocols. Configure Google OAuth 2.0 Auth Provider with a strict corporate email domain Whitelist Authorization Gate.
+	Turning on the Cloud Engine: Plugs the app into Google's enterprise servers and sets up the front security guard so only approved company emails can log in.
+	BE-02
+	Authorize real-time role-based routing rules. Direct verified Administrative emails to the desktop Control Tower and Technician emails to the Mobile Field Suite.
+	Smart Access Control: Automatically gives office coordinators the full scheduling dashboard while routing field techs straight to their phone view.
+	BE-03
+	Develop the Bidirectional Calendar Event Routine via Google Calendar API. Parse native updates using a background listener to automatically synch status and timestamp changes to Firestore.
+	Auto-Updating Schedule: Keeps the office calendar and the technician’s phone calendar talking to each other instantly without manual double-entry.
+	🎨 Track 3: Front-End Workspace Rendering (FE)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	FE-01
+	Build the Admin Control Tower desktop layout. Render the balanced 3-column UI: Left (Triage Inbox with programmatic top lock for Rescued Field Data), Center (Drag-and-Drop Central Calendar), Right (Pulse Feed Sidebar and Restocking Panel).
+	The Office Command Center: A clean single screen where office managers can drag unassigned customer requests right onto a technician's calendar.
+	FE-02
+	Construct Project Lifecycle Navigation Tabs. Integrate a context-locked scheduling option alongside an [Archive Project] function that moves historical data out of operational view into searchable "Cold Storage".
+	Clean Data Views: Allows the office to archive old projects out of sight so active views only display current, revenue-generating jobs.
+	FE-03
+	Develop Mobile Field Suite navigation engine featuring Onboarding Permission Handshakes. Intercept first-time setups to mandate device camera usage and geolocation tracking approval.
+	Field Tool Setup: Ensures technicians authorize the app to access their camera for receipts and GPS for location tracking before they accept work.
+	FE-04
+	Build the pre-travel review module (JobPreviewView). Display read-only site summaries with an isolated [Start Travel] execution trigger and a temporary "Cancel Travel" rollback reset option.
+	Accident-Proof Driving Clock: Let's technicians safely review site layouts before driving, with an easy "undo" button if they tap the travel button by mistake.
+	🚀 Track 4: Cloud Infrastructure & Deployment (DevOps)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	DevOps-01
+	Enable Firestore Native Offline Data Persistence and Client Cache Synchronization. Integrate symmetric token encryption using Python's cryptography library to secure locally stored access states.
+	The Zero-Signal Safety Net: Allows technicians to fill out reports deep inside concrete basements with zero cell service; the app saves their work and uploads it the second they get a signal.
+	DevOps-02
+	Establish Flet compiler automated deployment pipelines. Package the office portal as a native desktop executable (.exe/.app) and the mobile module as an installable .apk binary.
+	App Store Bypass: Packages the software so it installs directly onto office computers and field phones instantly, skipping slow, painful app store review processes.
+	🚀 Phase 2: V1.0 Efficiency Engine (Automation & Portal Integrations)
+Focus: Automating site folders, linking third-party web portals in a 50/50 dashboard split, locking down strict digital entry forms, and triggering immediate customer delivery.
+🧠 Track 1: Back-End Infrastructure & Automation (BE)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	BE-04
+	Construct the Automated Entity Provisioning Cascade script. Generate placeholder records (TEMP-CR / TEMP-PRJ) on unmapped intakes, trigger automated Google Drive sales folder generation, and email the destination directly to the responsible salesperson.
+	Automated Sales Folders: The moment an intake request lands, the app automatically builds a cloud folder and emails it to the salesperson without human help.
+	BE-05
+	Write the Automated Document Template Factory and Token Parser engine. Bind execution to the office laptop interface. Enforce Strict Requestor Logic Gate targeting exclusively the primary internal salesperson email with a direct Drive URL link.
+	Instant Customer Paperwork: The exact second a manager confirms an asset registration, the system builds a clean report and emails a web link right to the salesperson.
+	BE-06
+	Program the Truck Inventory Deduction Engine and Unlisted Part Entry Feed. Create an Admin Control Tower panel alert with an open text layout that updates the active job financial timeline immediately when an admin inputs cost data and hits ENTER.
+	Parts & Money Tracker: Automatically manages truck inventory. If a tech uses a rare part not in our system, it alerts the office to type in the cost and hit Enter to protect billable items.
+	BE-07
+	Write the Google Drive "Folder Gate" Listener, Confirmation Parser Inbox Handler, and Technical Continuity Routine. Map incomplete jobs back to the Admin Triage inbox while cloning past notes into the new Issue_Description field.
+	Automated Admin Assistant: Watches cloud folders to update job states, automatically files factory emails into Drive, and copies over history notes if a follow-up visit is needed.
+	BE-08
+	Deploy the Midnight Sales Digest Engine batch script to aggregate all daily completed registration events into a single consolidated email summary.
+	Anti-Spam Daily Summary: Combines all of the day's completed jobs into a single email sent to sales at midnight instead of flooding their inbox all day.
+	🎨 Track 2: Front-End Workspace Rendering (FE)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	FE-05
+	Construct the Laptop Sidecar Registration interface. Render a 50/50 split-screen container: Left Panel (field parameters and 1-click text [Copy] shortcuts), Right Panel (embedded live WebView portal framework).
+	The Split-Screen Workspace: Gives office staff a screen showing technician notes on the left and the factory registration portal on the right with quick copy-paste buttons.
+	FE-06
+	Implement a fallback execution pathway inside the Laptop Sidecar WebView container. Code a utility icon executing a page.launch_url() function to spawn blocked manufacturer portals in a standalone native browser window.
+	Failsafe Web Browsing: If a manufacturer's security blocks their website from loading inside our app, a single click launches it in a regular browser window without breaking the workflow.
+	FE-07
+	Build the Mobile Asset Intake Gate utilizing Location-Locked UI search parameters. Force a search-first requirement across the active site before showing data entry text boxes to prevent duplicated inventory creation.
+	Duplicate Prevention: Forces technicians to search the active building for a piece of equipment before they are allowed to add a new asset entry form.
+	FE-08
+	Deploy the Mandatory Evidence Photo Lockout feature on mobile form submissions. Block the submission action until images are captured for the Data Plate slot (with an "Illegible Plate" checkbox bypass) and Complete Control Screen slot.
+	No-Mistake Mobile Photos: Blocks field reports from being sent until the technician uploads pictures of the equipment tags and control screens.
+	FE-09
+	Integrate the local Mobile Interaction Safeguards. Deploy a rapid camera snapshot receipt utility, an asset-form item deletion cleanup loop, and a 5-minute local post-submission lockout grace period.
+	Field Error Correction: Gives technicians a rapid tool to snap expense receipts, automatically updates vehicle stock if they remove a part, and gives them 5 minutes to fix typos after submission.
+	🚀 Track 3: Cloud Infrastructure & Quality Assurance (DevOps / QA)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	DevOps-03
+	Code the background Media Optimization & Compression Engine with an asynchronous File Upload Retry Queue worker thread to streamline field data uploads.
+	Fast Media Uploads: Shrinks giant field photos down automatically before sending them, and silently retries uploading in the background so the app never freezes up on the technician.
+	QA-01
+	Execute end-to-end operational user acceptance scripts: Intake ➔ Dispatch ➔ Mobile Field Collection ➔ Laptop Portal Verification ➔ Automated Customer Delivery Loop.
+	The Final Inspection: Simulates real-world workdays from start to finish to guarantee invoices and documents fire flawlessly before we launch to real users.
+	📈 Phase 3: V2.0 Optimization & Enterprise Polish
+Focus: Implementing adaptive layout engines and cleaning client storage spaces automatically.
+🛠️ Track 1: Architectural Scaling & Interface Intelligence (ARCH / FE)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	ARCH-02
+	Establish the Horizontal Form Expansion Contract for NoSQL document growth. Dictate a rigid schema layout policy requiring the first four core indexes (Report_ID, Job_ID, ASSET-XXXXX, Registration_Status) on all newly engineered field inspection sheets.
+	Future-Proof Blueprints: Sets up a strict data rule so adding entirely new types of service forms down the road takes minutes instead of paying developers to rewrite database code.
+	FE-10
+	Integrate Adaptive Parametric Layout logic into the Mobile Field Suite form container. Dynamically alter operational input parameters based on the specific classification tag of the targeted hardware asset.
+	Smart Morphing Forms: The mobile app screen automatically changes its questions depending on whether the technician selects an electrical box or an HVAC unit.
+	🚀 Track 2: Automated Maintenance Routines (DevOps)
+Task ID
+	Technical Task Description
+	ELI5 Business Value (For the Director)
+	DevOps-04
+	Deploy the 7-Day Mobile Local Data Storage Cache Sweep script. Program an automated routine hooked into the morning initialization sequence to target and purge completed local records and compressed image assets older than 7 calendar days.
+	Phone Memory Cleanup: Automatically clears out old, completed job data and field photos from the technician's phone every single week so the device never runs out of space.

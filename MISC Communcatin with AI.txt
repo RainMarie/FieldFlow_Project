@@ -1,0 +1,39 @@
+Impact Analysis: Required Edits Across Application Files (.py)
+
+src/backend/db_manager.py:
+
+Update CREATE TABLE DDL statements to apply nullable constraints on assets.tbc_job_number and job_parts_used.sku.
+
+Refactor users table schema to drop tech_flag and admin_flag.
+
+Update audit_log insertion functions to accept entity_type and entity_id.
+
+src/backend/email_service.py:
+
+Update dispatch receipt query lookups to pull sales_rep_email directly from dispatches or intake_requests.
+
+src/frontend/admin_dashboard.py:
+
+Update user account management screens to use a single role dropdown picker (Admin, Technician, Sales).
+
+Update intake triage and project creation forms to populate master project records.
+
+Refactor the Audit Trail viewer widget to filter log entries by entity_type.
+
+src/frontend/mobile_suite.py:
+
+Update technician parts usage logging to submit sku = None when logging unlisted items (is_unlisted = 1).
+
+Update equipment history screens to query all historical asset_inspections linked to an asset across different dispatches.
+
+src/backend/search_engine.py:
+
+Update search queries to utilize new indexes on locations.site_name, contractors.company_name, assets.equipment_tag, and parts_master.part_description.
+
+
+
+
+
+
+
+Impact Analysis: Required File ModificationsFile PathImpacted Components / FunctionsRequired Updatessrc/backend/db_manager.pyLocalDatabaseManager.init_sqlite_schema(), intake/dispatch routines  Rewrite 16 table DDLs with foreign key constraints, add index statements, and build Get-or-Create resolvers.  src/backend/lifecycle_rules.pyvalidate_user_role_permission(), validate_intake_form_data()  Update role checks to evaluate role IN ('Admin', 'Technician') instead of admin_flag/tech_flag.  src/backend/sync_engine.pymap_local_dispatch_to_cloud(), map_intake_to_cloud()  Align cloud payload dictionary keys with tbco_account_number, site_name, and sales_rep_email.  src/frontend/admin_dashboard.pyload_live_triage_feed(), dispatch_from_triage_card(), search queries  Update SQL JOIN queries to map intake_requests and projects using tbco_account_number and site_name.  src/frontend/mobile_suite.pyload_job_briefing_view(), update_project_asset_details()  Update asset lookup queries by tbc_job_number and site_name; pass sku = None for custom unlisted parts.  src/frontend/intake_form_component.pysubmit_intake_form()  Bind the internal sales rep email (sales_rep_email) and contractor account number (tbco_account_number).  src/frontend/project_form_component.pysubmit_project_creation()  Store tbco_account_number as the contractor primary key when provisioning new projects.  
