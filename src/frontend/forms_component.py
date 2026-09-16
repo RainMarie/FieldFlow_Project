@@ -20,7 +20,8 @@ from src.backend.db_manager import (
     local_db, 
     db as firestore_db, 
     resolve_location, 
-    resolve_contractor
+    resolve_contractor,
+    resolve_sales_user
 )
 from src.backend.drive_service import ensure_project_drive_folder
 from src.frontend.shared_utils import find_any_local_logo, show_toast
@@ -73,12 +74,68 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_contact_email = ft.TextField(label="Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_phone = ft.TextField(label="Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 4. Sales Rep Controls
+    # 4. Sales Rep Controls (Re-ordered: Email First + On Blur Handler)
+    sales_instructions_note = ft.Text(
+        "Enter Sales Rep Email first to auto-fill details from Cloud Firestore, or type new details below to register a sales user.",
+        size=11,
+        color=FieldFlowLightTheme.TEXT_MUTED
+    )
+
     tf_sales_first = ft.TextField(label="Sales Rep First Name", hint_text="e.g. Jane", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_last = ft.TextField(label="Sales Rep Last Name", hint_text="e.g. Doe", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_sales_email = ft.TextField(label="Sales Rep Email", hint_text="e.g. jdoe@tombarrow.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_phone = ft.TextField(label="Sales Rep Phone", hint_text="e.g. 813-555-0144", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     dd_team_code = ft.Dropdown(label="Team Code", options=[ft.dropdown.Option(code) for code in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+
+    def on_sales_email_blur(e):
+        clean_email = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
+        if not clean_email:
+            return
+
+        user_found = False
+
+        # Step A: Primary Lookup in Cloud Firestore
+        if firestore_db is not None:
+            try:
+                doc = firestore_db.collection("users").document(clean_email).get()
+                if doc.exists:
+                    user_data = doc.to_dict()
+                    tf_sales_first.value = user_data.get("first_name", "")
+                    tf_sales_last.value = user_data.get("last_name", "")
+                    tf_sales_phone.value = user_data.get("user_phone", "")
+                    user_found = True
+                    show_toast(page, "Loaded Sales Rep from Cloud Firestore.", kind="info")
+            except Exception as err:
+                logging.warning(f"Cloud sales user lookup error: {err}")
+
+        # Step B: Offline Fallback Lookup in Local SQLite
+        if not user_found:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT first_name, last_name, user_phone FROM users WHERE LOWER(user_email) = ?", (clean_email,))
+                    row = cursor.fetchone()
+                    if row:
+                        tf_sales_first.value = row["first_name"] or ""
+                        tf_sales_last.value = row["last_name"] or ""
+                        tf_sales_phone.value = row["user_phone"] or ""
+                        user_found = True
+                        show_toast(page, "Loaded Sales Rep from local database.", kind="info")
+            except Exception as err:
+                logging.warning(f"Local sales user lookup error: {err}")
+
+        if not user_found:
+            show_toast(page, "New Sales Rep email. Please enter name and phone details below.", kind="info")
+
+        if page:
+            page.update()
+
+    tf_sales_email = ft.TextField(
+        label="Sales Rep Email",
+        hint_text="e.g. jdoe@tombarrow.com",
+        border_color=FieldFlowLightTheme.ACCENT_BLUE,
+        expand=True,
+        on_blur=on_sales_email_blur
+    )
 
     # 5. File Upload Controls & Status
     staged_photo_path = {"value": ""}
@@ -110,13 +167,11 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
     btn_upload_photo = ft.OutlinedButton(
         "Select Photo",
-        icon=ft.icons.IMAGE,
         style=FieldFlowLightTheme.get_secondary_button_style(),
         on_click=lambda _: photo_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
     )
     btn_upload_docs = ft.OutlinedButton(
         "Upload Documents",
-        icon=ft.icons.ATTACH_FILE,
         style=FieldFlowLightTheme.get_secondary_button_style(),
         on_click=lambda _: docs_picker.pick_files(allow_multiple=True)
     )
@@ -141,9 +196,9 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         tf_contact_email.value = ""
         tf_contact_phone.value = ""
 
+        tf_sales_email.value = ""
         tf_sales_first.value = ""
         tf_sales_last.value = ""
-        tf_sales_email.value = ""
         tf_sales_phone.value = ""
         dd_team_code.value = None
 
@@ -159,7 +214,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
     def submit_project_creation(e):
         if not tf_job_num.value or not tf_proj_name.value or not tf_company.value or not tf_street_1.value or not tf_city.value or not tf_state.value:
-            show_toast(page, "❌ Job #, Project Name, Company, Street Address, City, and State are required!", kind="error")
+            show_toast(page, "Job #, Project Name, Company, Street Address, City, and State are required!", kind="error")
             return
 
         job_num = tf_job_num.value.strip().upper()
@@ -178,12 +233,21 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         clean_site = resolve_location(s_name, street_1, street_2, city_val, state_val, zip_val, country_val)
         clean_acct = resolve_contractor(acct_no, company)
 
+        # Auto-register sales user with role='Sales' in users table
+        sales_email_val = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
+        if sales_email_val:
+            resolve_sales_user(
+                user_email=sales_email_val,
+                first_name=tf_sales_first.value.strip() if tf_sales_first.value else "",
+                last_name=tf_sales_last.value.strip() if tf_sales_last.value else ""
+            )
+
         # Automatically Provision Google Drive Folder inside Shared Drive
         drive_info = ensure_project_drive_folder(
             job_number=job_num,
             project_name=p_name,
             requestor_name=f"{tf_sales_first.value} {tf_sales_last.value}".strip(),
-            requestor_email=tf_sales_email.value.strip().lower() if tf_sales_email.value else "",
+            requestor_email=sales_email_val,
             attached_file_paths=staged_documents
         )
         drive_id = drive_info.get("drive_id", f"FLD-GDRV-{job_num}")
@@ -208,7 +272,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "project_site_contact_phone": tf_contact_phone.value.strip() if tf_contact_phone.value else "",
             "sales_rep_first_name": tf_sales_first.value.strip() if tf_sales_first.value else "",
             "sales_rep_last_name": tf_sales_last.value.strip() if tf_sales_last.value else "",
-            "sales_rep_email": tf_sales_email.value.strip().lower() if tf_sales_email.value else "",
+            "sales_rep_email": sales_email_val,
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "team_code": dd_team_code.value if dd_team_code.value else "",
             "drive_id": drive_id,
@@ -237,7 +301,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             except Exception as fs_err:
                 logging.error(f"Firestore project insert error: {fs_err}")
 
-        show_toast(page, f"🎉 Project #{job_num} created successfully!", kind="success")
+        show_toast(page, f"Project #{job_num} created successfully!", kind="success")
         clear_form()
 
         if on_success_callback:
@@ -252,12 +316,15 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             ft.Row([tf_company, tf_company_acct], spacing=10),
             ft.Row([tf_contact_first, tf_contact_last], spacing=10),
             ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            sales_instructions_note,
+            ft.Row([tf_sales_email], spacing=10),
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
-            ft.Row([tf_sales_email, tf_sales_phone, dd_team_code], spacing=10),
+            ft.Row([tf_sales_phone, dd_team_code], spacing=10),
             ft.Row([btn_upload_photo, photo_status_txt], spacing=10),
             ft.Row([btn_upload_docs, docs_status_txt], spacing=10),
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
-            ft.ElevatedButton("Create Project", icon=ft.icons.FOLDER, style=FieldFlowLightTheme.get_primary_button_style(), on_click=submit_project_creation)
+            ft.ElevatedButton("Create Project", style=FieldFlowLightTheme.get_primary_button_style(), on_click=submit_project_creation)
         ], spacing=10, scroll=ft.ScrollMode.AUTO, tight=True),
         padding=10
     )
@@ -281,7 +348,7 @@ def build_asset_registration_tool(
 ) -> ft.Column:
     tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
 
-    search_input_field = ft.TextField(label="Search Equipment Serial Number...", prefix_icon=ft.icons.SEARCH, border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    search_input_field = ft.TextField(label="Search Equipment Serial Number...", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     serial_field_confirm = ft.TextField(label="Asset Serial Number*", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     model_field_confirm = ft.TextField(label="Asset Model Number", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     name_field_confirm = ft.TextField(label="Equipment Name / Tag*", border_color=FieldFlowLightTheme.ACCENT_BLUE)
@@ -289,7 +356,7 @@ def build_asset_registration_tool(
     tf_manufacturer = ft.TextField(label="Manufacturer", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     dd_serves = ft.Dropdown(label="Serves", options=[ft.dropdown.Option("Air Handler"), ft.dropdown.Option("Fan"), ft.dropdown.Option("Chiller"), ft.dropdown.Option("Pump")], border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
-    register_btn = ft.ElevatedButton("➕ Register Asset", style=FieldFlowLightTheme.get_primary_button_style())
+    register_btn = ft.ElevatedButton("Register Asset", style=FieldFlowLightTheme.get_primary_button_style())
 
     return ft.Column([
         ft.Row([ft.TextButton("<- Back", on_click=on_back_callback)]),
@@ -328,7 +395,7 @@ def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Contr
         if firestore_db is not None:
             firestore_db.collection("parts_master").document(sku_val).set(part_payload, merge=True)
 
-        show_toast(page, f"🎉 Part '{sku_val}' saved!", kind="success")
+        show_toast(page, f"Part '{sku_val}' saved!", kind="success")
         if on_success_callback: on_success_callback(part_payload)
 
     return ft.Container(content=ft.Column([tf_sku, tf_manufacturer, tf_description, tf_unit_cost, ft.ElevatedButton("Save Part", on_click=submit_part)], spacing=10))
@@ -352,7 +419,7 @@ def build_manufacturer_form(page: ft.Page, on_success_callback=None) -> ft.Contr
         if firestore_db is not None:
             firestore_db.collection("manufacturers").document(tf_mfr_id.value).set(payload, merge=True)
 
-        show_toast(page, f"🎉 Manufacturer saved!", kind="success")
+        show_toast(page, "Manufacturer saved!", kind="success")
         if on_success_callback: on_success_callback(payload)
 
     return ft.Container(content=ft.Column([tf_mfr_id, tf_company, ft.ElevatedButton("Save Vendor", on_click=submit_mfr)], spacing=10))
@@ -376,7 +443,7 @@ def build_truck_form(page: ft.Page, get_tech_options_fn=None, on_success_callbac
         if firestore_db is not None:
             firestore_db.collection("trucks").document(tf_truck_id.value).set(payload, merge=True)
 
-        show_toast(page, f"🎉 Truck saved!", kind="success")
+        show_toast(page, "Truck saved!", kind="success")
         if on_success_callback: on_success_callback(payload)
 
     return ft.Container(content=ft.Column([tf_truck_id, tf_plate, ft.ElevatedButton("Save Truck", on_click=submit_truck)], spacing=10))
@@ -529,7 +596,7 @@ def build_service_intake_form(
 
     def submit_service_request(e):
         if not tf_job_num.value or not tf_site_name.value or not tf_proj_name.value or not tf_street_1.value or not tf_city.value or not tf_sales_first.value:
-            show_toast(page, "❌ Job #, Campus Name, Project Name, Street, City, and Sales Rep First Name are required!", kind="error")
+            show_toast(page, "Job #, Campus Name, Project Name, Street, City, and Sales Rep First Name are required!", kind="error")
             return
 
         req_id = f"REQ-{int(time.time())}"
@@ -593,7 +660,7 @@ def build_service_intake_form(
             except Exception as fs_err:
                 logging.error(f"Firestore intake sync error: {fs_err}")
 
-        show_toast(page, f"🎉 Service Request #{req_id} logged successfully!", kind="success")
+        show_toast(page, f"Service Request #{req_id} logged successfully!", kind="success")
         clear_form()
 
         if on_success_callback:
@@ -613,11 +680,11 @@ def build_service_intake_form(
             tf_issue,
             ft.Row([dd_technician, tf_scheduled_time], spacing=10),
             ft.Row([
-                ft.OutlinedButton("Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True)),
+                ft.OutlinedButton("Upload Files", style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True)),
                 docs_status_txt
             ], spacing=10),
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
-            ft.ElevatedButton("Create Service Request", icon=ft.icons.SEND, style=FieldFlowLightTheme.get_primary_button_style(), on_click=submit_service_request)
+            ft.ElevatedButton("Create Service Request", style=FieldFlowLightTheme.get_primary_button_style(), on_click=submit_service_request)
         ], spacing=10, scroll=ft.ScrollMode.AUTO, tight=True),
         padding=10
     )
