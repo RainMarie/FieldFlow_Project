@@ -20,7 +20,6 @@ import threading
 from datetime import datetime, timedelta
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-# Backend Module Imports
 from src.backend.lifecycle_rules import validate_user_role_permission, validate_project_space_exists
 from src.backend.search_engine import search_admin_portal
 from src.frontend.theme import FieldFlowLightTheme
@@ -33,7 +32,6 @@ from src.backend.drive_service import (
     ensure_project_drive_folder
 )
 
-# Consolidated Frontend Module Imports
 from src.frontend.shared_utils import show_toast, open_drive_link
 from src.frontend.cards_component import (
     build_standard_ticket_card,
@@ -54,9 +52,6 @@ from src.frontend.forms_component import (
 from src.frontend.calendar_component import build_calendar_widget
 
 
-# =========================================================================
-# --- MAIN APPLICATION DASHBOARD ---
-# =========================================================================
 def main(page: ft.Page):
     page.title = "FieldFlow Admin Control Tower"
     page.window_maximized = True
@@ -64,7 +59,6 @@ def main(page: ft.Page):
     page.bgcolor = FieldFlowLightTheme.BG_LIGHT
     TITLE_FONT_SIZE = 18
 
-    # Start background Google Calendar synchronization listener
     calendar_listener = GoogleCalendarListener(interval_seconds=10)
     calendar_listener.start_monitoring()
 
@@ -99,9 +93,6 @@ def main(page: ft.Page):
 
     projects_view_filter = {"is_grid": True}
 
-    # =========================================================================
-    # --- DYNAMIC DROPDOWN OPTION HELPERS ---
-    # =========================================================================
     def get_tech_options():
         options = []
         try:
@@ -167,14 +158,8 @@ def main(page: ft.Page):
             print(f"Error fetching sales reps: {err}")
         return options
 
-    # =========================================================================
-    # --- TRIAGE INBOX UI CONTAINER DECLARATION ---
-    # =========================================================================
     triage_cards_container = ft.Column(spacing=10, scroll=ft.ScrollMode.ALWAYS, expand=True)
 
-    # =========================================================================
-    # --- LIVE TRIAGE INBOX FEED LOADER ---
-    # =========================================================================
     def load_live_triage_feed():
         triage_cards_container.controls.clear()
         pending_records = []
@@ -183,9 +168,11 @@ def main(page: ft.Page):
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT * FROM intake_requests
-                    WHERE triage_status IN ('Unassigned', 'PENDING_TRIAGE', 'Pending')
-                    ORDER BY submission_timestamp DESC
+                    SELECT i.*, u.first_name AS sales_first_name, u.last_name AS sales_last_name
+                    FROM intake_requests i
+                    LEFT JOIN users u ON i.sales_rep_email = u.user_email
+                    WHERE i.triage_status IN ('Unassigned', 'PENDING_TRIAGE', 'Pending')
+                    ORDER BY i.submission_timestamp DESC
                 """)
                 for row in cursor.fetchall():
                     r_dict = dict(row)
@@ -196,7 +183,7 @@ def main(page: ft.Page):
 
         if not pending_records and db is not None:
             try:
-                query = db.collection("intake_ledger").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
+                query = db.collection("intake_requests").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
                 for doc in query:
                     record = doc.to_dict()
                     record["request_id"] = doc.id
@@ -263,9 +250,6 @@ def main(page: ft.Page):
             triage_cards_container.controls.append(card)
         page.update()
 
-    # =========================================================================
-    # --- MODALS INTEGRATION ---
-    # =========================================================================
     intake_form_widget = build_service_intake_form(
         page,
         on_success_callback=lambda payload: [
@@ -338,10 +322,10 @@ def main(page: ft.Page):
         if db is not None:
             try:
                 if req_id:
-                    doc = db.collection("intake_ledger").document(req_id).get()
+                    doc = db.collection("intake_requests").document(req_id).get()
                     if doc.exists: row = doc.to_dict()
                 if not row and job_num:
-                    query = db.collection("intake_ledger").where("tbc_job_number", "==", job_num).limit(1).stream()
+                    query = db.collection("intake_requests").where("tbc_job_number", "==", job_num).limit(1).stream()
                     for d in query: row = d.to_dict()
             except Exception as err:
                 print(f"Error loading ticket record: {err}")
@@ -402,7 +386,7 @@ def main(page: ft.Page):
                 conn.commit()
 
             if db is not None:
-                db.collection("intake_ledger").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
+                db.collection("intake_requests").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
 
             show_toast_local(f"Dispatched Job #{job_num} to {selected_tech}!", kind="success")
             load_live_triage_feed()
@@ -412,9 +396,6 @@ def main(page: ft.Page):
         except Exception as err:
             show_toast_local(f"Dispatch Error: {err}", kind="error")
 
-    # =========================================================================
-    # --- COCKPIT PANEL ASSEMBLY ---
-    # =========================================================================
     left_triage_panel = ft.Container(
         content=ft.Column([
             ft.Text("1. TRIAGE INBOX", size=TITLE_FONT_SIZE, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PINK_PRIMARY),
@@ -448,9 +429,6 @@ def main(page: ft.Page):
         expand=True
     )
 
-    # =========================================================================
-    # --- SEARCH ENGINE & PROJECTS MANIFEST ---
-    # =========================================================================
     projects_list_container = ft.Row(wrap=True, spacing=12)
 
     def toggle_grid_list_view_mode(e):
@@ -514,7 +492,6 @@ def main(page: ft.Page):
     )
 
     def execute_live_search(e):
-        """Executes Cloud-First project search fetching photo_url for full image rendering."""
         search_query = search_input.value.strip().lower() if search_input and search_input.value else ""
         projects_list_container.controls.clear()
         is_grid_mode = projects_view_filter["is_grid"]
@@ -531,12 +508,12 @@ def main(page: ft.Page):
                     job_num = str(p_dict.get("tbc_job_number", "")).lower()
                     p_name = str(p_dict.get("project_name", "")).lower()
                     s_name = str(p_dict.get("site_name", "")).lower()
-                    c_name = str(p_dict.get("contractor_company_name") or p_dict.get("contractor_name") or p_dict.get("company_name", "")).lower()
+                    c_name = str(p_dict.get("contractor_company_name", "")).lower()
 
                     if not search_query or (search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name):
                         if not p_dict.get("drive_id"):
                             p_dict["drive_id"] = f"FLD-DRIVE-{p_dict.get('tbc_job_number')}"
-                        p_dict["contractor_name"] = c_name or "Partner"
+                        p_dict["contractor_company_name"] = c_name or "Partner"
                         db_rows.append(p_dict)
             except Exception as cloud_err:
                 print(f"Cloud project search offline/error: {cloud_err}")
@@ -547,13 +524,12 @@ def main(page: ft.Page):
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT p.tbc_job_number, p.project_name, p.site_name, p.drive_id,
-                               p.tbco_account_number, c.company_name
+                               p.tbco_account_number, c.company_name AS contractor_company_name
                         FROM projects p
                         LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
                     """)
                     for row in cursor.fetchall():
                         r_dict = dict(row)
-                        r_dict["contractor_name"] = r_dict.get("company_name") or "Partner"
                         if not r_dict.get("drive_id"):
                             r_dict["drive_id"] = f"FLD-DRIVE-{r_dict['tbc_job_number']}"
 
@@ -563,7 +539,7 @@ def main(page: ft.Page):
                             job_num = str(r_dict.get("tbc_job_number", "")).lower()
                             p_name = str(r_dict.get("project_name", "")).lower()
                             s_name = str(r_dict.get("site_name", "")).lower()
-                            c_name = str(r_dict.get("contractor_name", "")).lower()
+                            c_name = str(r_dict.get("contractor_company_name", "")).lower()
                             if search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name:
                                 db_rows.append(r_dict)
             except Exception as err:
@@ -596,9 +572,6 @@ def main(page: ft.Page):
         expand=True
     )
 
-    # =========================================================================
-    # --- USER ACCOUNT MANAGEMENT WIDGET (RESTORED) ---
-    # =========================================================================
     user_email_input = ft.TextField(label="User Email*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     user_first_name_input = ft.TextField(label="First Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     user_last_name_input = ft.TextField(label="Last Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
@@ -813,9 +786,6 @@ def main(page: ft.Page):
         border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE), shadow=FieldFlowLightTheme.get_card_shadow(), expand=True
     )
 
-    # =========================================================================
-    # --- AUDIT TRAIL VIEWER WIDGET (RESTORED) ---
-    # =========================================================================
     audit_table_container = ft.Column(spacing=6)
     entity_filter_picker = ft.Dropdown(
         label="Filter Entity Type",
@@ -876,18 +846,12 @@ def main(page: ft.Page):
         border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE), shadow=FieldFlowLightTheme.get_card_shadow(), expand=True
     )
 
-    # =========================================================================
-    # --- MASTER CATALOG TAB WIDGET ---
-    # =========================================================================
     master_catalog_view = build_master_data_management_view(
         page=page,
         get_tech_options_fn=get_tech_options,
         on_success_callback=lambda payload: execute_live_search(None)
     )
 
-    # =========================================================================
-    # --- TAB MANAGER ASSEMBLY (EXACT SPECIFIED TAB ORDER) ---
-    # =========================================================================
     tab_manager = ft.Tabs(
         selected_index=0,
         tabs=[
@@ -902,16 +866,12 @@ def main(page: ft.Page):
 
     page.add(ft.Column([top_search_bar, tab_manager], expand=True, spacing=8))
     
-    # Initial Data Feed Load
     load_live_triage_feed()
     refresh_calendar_fn()
     execute_live_search(None)
     refresh_audit_trail_table()
     refresh_users_list()
 
-    # =========================================================================
-    # --- AUTOMATIC BACKGROUND REFRESH WORKER ---
-    # =========================================================================
     def auto_refresh_worker():
         while True:
             time.sleep(5)

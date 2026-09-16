@@ -1,7 +1,7 @@
 """
 src/frontend/cards_component.py
 Consolidated card rendering module for FieldFlow using standardized key names,
-legacy fallback chains, project photo rendering, and uniform FieldFlowLightTheme styling.
+project photo rendering, and uniform FieldFlowLightTheme styling.
 """
 
 import os
@@ -141,73 +141,50 @@ def build_project_card(
 ) -> ft.Card:
     """
     Renders a project card container for Projects Registry in Grid or List mode.
-    Fully integrated with build_project_image_control for photo rendering.
+    Directly consumes canonical keys without fallback chains.
     """
     if isinstance(project_data, dict):
         job_num = project_data.get("tbc_job_number", "123456XX")
         name = project_data.get("project_name", "Service Project")
         st1 = project_data.get("street_address_1", "")
-        st2 = project_data.get("street_address_2", "")
         c_city = project_data.get("city", "")
         c_state = project_data.get("state", "")
-        c_zip = project_data.get("postal_code", "")
-        c_country = project_data.get("country", "US")
 
-        address = (
-            f"{st1}, {c_city}, {c_state}".strip(", ")
-        ) or project_data.get("site_address") or project_data.get("site_name") or "Pending Address"
+        address = f"{st1}, {c_city}, {c_state}".strip(", ") if st1 else project_data.get("site_name", "Pending Address")
 
-        client = project_data.get("contractor_company_name") or project_data.get("contractor_name") or project_data.get("company_name") or "Partner"
-        site_name = project_data.get("site_name") or name
-        drive_id = project_data.get("drive_id") or f"FLD-DRIVE-{job_num}"
+        client = project_data.get("contractor_company_name", "Partner")
+        site_name = project_data.get("site_name", name)
+        drive_id = project_data.get("drive_id", f"FLD-DRIVE-{job_num}")
         photo_url = project_data.get("photo_url", "")
 
-        cnt_f = project_data.get("project_site_contact_first_name") or project_data.get("pm_first_name") or project_data.get("first_name", "")
-        cnt_l = project_data.get("project_site_contact_last_name") or project_data.get("pm_last_name") or project_data.get("last_name", "")
-        cnt_em = project_data.get("project_site_contact_email") or project_data.get("pm_email") or project_data.get("email", "")
-        cnt_ph = project_data.get("project_site_contact_phone") or project_data.get("pm_phone") or project_data.get("phone", "")
-    elif isinstance(project_data, (tuple, list)):
-        job_num = project_data[0] if len(project_data) > 0 else "123456XX"
-        name = project_data[1] if len(project_data) > 1 else "Project"
-        address = project_data[2] if len(project_data) > 2 else "Pending Address"
-        client = project_data[3] if len(project_data) > 3 else "Partner"
-        drive_id = project_data[4] if len(project_data) > 4 else f"FLD-DRIVE-{job_num}"
-        photo_url = project_data[5] if len(project_data) > 5 else ""
-        st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "US"
-        site_name = name
-        cnt_f, cnt_l, cnt_em, cnt_ph = "", "", "", ""
+        cnt_f = project_data.get("project_site_contact_first_name", "")
+        cnt_l = project_data.get("project_site_contact_last_name", "")
+        cnt_em = project_data.get("project_site_contact_email", "")
+        cnt_ph = project_data.get("project_site_contact_phone", "")
     else:
         job_num, name, address, client, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "FLD-0", ""
-        st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "US"
+        st1, c_city, c_state = "", "", ""
         site_name = name
         cnt_f, cnt_l, cnt_em, cnt_ph = "", "", "", ""
 
-    # Standardized pre-fill payload dictionary for Service Requests
     prefill_payload = {
         "tbc_job_number": job_num,
         "project_name": name,
         "contractor_company_name": client,
         "site_name": site_name,
         "street_address_1": st1,
-        "street_address_2": st2,
         "city": c_city,
         "state": c_state,
-        "postal_code": c_zip,
-        "country": c_country,
         "project_site_contact_first_name": cnt_f,
         "project_site_contact_last_name": cnt_l,
         "project_site_contact_email": cnt_em,
         "project_site_contact_phone": cnt_ph,
-        "sales_rep_first_name": project_data.get("sales_rep_first_name", "") if isinstance(project_data, dict) else "",
-        "sales_rep_last_name": project_data.get("sales_rep_last_name", "") if isinstance(project_data, dict) else "",
         "sales_rep_email": project_data.get("sales_rep_email", "") if isinstance(project_data, dict) else "",
-        "sales_rep_phone": project_data.get("sales_rep_phone", "") if isinstance(project_data, dict) else "",
         "team_code": project_data.get("team_code", "") if isinstance(project_data, dict) else "",
         "drive_id": drive_id,
         "photo_url": photo_url
     }
 
-    # Isolated event handlers
     def handle_service_request_click(e):
         if on_service_request_action:
             on_service_request_action(prefill_payload)
@@ -230,7 +207,6 @@ def build_project_card(
                 width=350,
                 border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
                 shadow=FieldFlowLightTheme.get_card_shadow(),
-                # REMOVED container on_click/ink so clicking background does not open edit modal
                 content=ft.Column(
                     [
                         img_control,
@@ -288,7 +264,6 @@ def build_project_card(
                 width=1180,
                 border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
                 shadow=FieldFlowLightTheme.get_card_shadow(),
-                # REMOVED container on_click/ink so clicking background does not open edit modal
                 content=ft.Row(
                     [
                         small_img,
@@ -352,25 +327,16 @@ def build_standard_ticket_card(
     on_drive_action=None,
     page: ft.Page = None
 ) -> ft.Container:
-    """Renders ticket cards reading directly from standardized key names with legacy fallbacks."""
+    """Renders ticket cards consuming canonical key names directly."""
     
-    # 1. Job & Client
-    job_num = record_data.get("tbc_job_number") or "123456XX"
-    contractor = (
-        record_data.get("contractor_company_name")
-        or record_data.get("company_name")
-        or record_data.get("contractor_name")
-        or "Unspecified Client"
-    )
-    
-    # 2. Campus & Project Name
-    site_campus = record_data.get("site_name") or "Site Campus"
-    project_name = record_data.get("project_name") or "Service Request"
+    job_num = record_data.get("tbc_job_number", "123456XX")
+    contractor = record_data.get("contractor_company_name", "Unspecified Client")
+    site_campus = record_data.get("site_name", "Site Campus")
+    project_name = record_data.get("project_name", "Service Request")
 
-    # 3. Address Components
-    street = record_data.get("street_address_1") or record_data.get("project_site_address") or record_data.get("site_address") or ""
-    city = record_data.get("city") or ""
-    state = record_data.get("state") or ""
+    street = record_data.get("street_address_1", "")
+    city = record_data.get("city", "")
+    state = record_data.get("state", "")
     
     if street and city and state:
         address_display = f"{street}, {city}, {state}"
@@ -381,15 +347,14 @@ def build_standard_ticket_card(
     else:
         address_display = "Pending Address"
 
-    # 4. Description & Status
-    description = record_data.get("issue_description") or record_data.get("request_type") or "Service Call"
-    status = record_data.get("triage_status") or record_data.get("status") or "Unassigned"
-    req_id = record_data.get("request_id") or "REQ-NEW"
+    description = record_data.get("issue_description", "Service Call")
+    status = record_data.get("triage_status", record_data.get("status", "Unassigned"))
+    req_id = record_data.get("request_id", "REQ-NEW")
 
-    # 5. Sales Rep Concatenation
-    sales_f = str(record_data.get("sales_rep_first_name") or "").strip()
-    sales_l = str(record_data.get("sales_rep_last_name") or "").strip()
-    sales_email = record_data.get("sales_rep_email") or record_data.get("requestor_email") or ""
+    # Read salesperson details retrieved from joined users table query
+    sales_f = str(record_data.get("sales_first_name") or "").strip()
+    sales_l = str(record_data.get("sales_last_name") or "").strip()
+    sales_email = record_data.get("sales_rep_email", "")
     
     if sales_f or sales_l:
         sales_full_name = f"{sales_f} {sales_l}".strip()
@@ -398,15 +363,15 @@ def build_standard_ticket_card(
     else:
         sales_full_name = "Unassigned Sales Rep"
 
-    # 6. Site Contact Concatenation
+    # Read site contact details
     cnt_f = str(record_data.get("project_site_contact_first_name") or "").strip()
     cnt_l = str(record_data.get("project_site_contact_last_name") or "").strip()
-    cnt_phone = record_data.get("project_site_contact_phone") or record_data.get("contact_phone") or "N/A"
+    cnt_phone = record_data.get("project_site_contact_phone", "N/A")
     
     if cnt_f or cnt_l:
         cnt_full_name = f"{cnt_f} {cnt_l}".strip()
     else:
-        cnt_full_name = record_data.get("project_site_contact_name") or "Site Contact (N/A)"
+        cnt_full_name = "Site Contact (N/A)"
 
     badge_bg, badge_color = FieldFlowLightTheme.resolve_status_badge_colors(status)
 
@@ -423,7 +388,6 @@ def build_standard_ticket_card(
 
     footer_ref = ft.Text(f"Tracking Ref: {req_id}", size=10, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
 
-    # Context-Specific Dispatch Control Assembly (Prevents Vertical Flex Overlap)
     action_controls = []
     if card_context == "triage" and card_tech_dropdown and card_date_input and card_date_btn:
         tech_wrapper = ft.Container(content=card_tech_dropdown, padding=ft.padding.only(top=4, bottom=4))
@@ -474,9 +438,9 @@ def build_standard_ticket_card(
 # =========================================================================
 
 def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_action=None) -> ft.Container:
-    name = str(asset_data.get("asset_name") or "Site Equipment")
-    model = str(asset_data.get("model_number") or "N/A")
-    serial = str(asset_data.get("serial_number") or "N/A")
+    name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name", "Site Equipment"))
+    model = str(asset_data.get("model_number", "N/A"))
+    serial = str(asset_data.get("serial_number", "N/A"))
 
     badge_bg, badge_color = FieldFlowLightTheme.resolve_status_badge_colors("Completed" if is_serviced else "Unassigned")
 
@@ -500,9 +464,9 @@ def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_
 
 
 def build_visit_history_card(visit_data: dict, on_click_action=None) -> ft.Container:
-    v_date = str(visit_data.get("scheduled_time") or "Past Date")
-    v_tech = str(visit_data.get("technician_email") or "Tech Unassigned")
-    v_status = str(visit_data.get("completion_status") or "Completed")
+    v_date = str(visit_data.get("scheduled_time", "Past Date"))
+    v_tech = str(visit_data.get("technician_email", "Tech Unassigned"))
+    v_status = str(visit_data.get("status", "Completed"))
 
     v_badge_bg, v_badge_color = FieldFlowLightTheme.resolve_status_badge_colors(v_status)
 

@@ -1,3 +1,8 @@
+"""
+src/frontend/sidecar_portal.py
+Technician Desktop Portal using normalized relational queries and canonical keys.
+"""
+
 import flet as ft
 import os
 import sys
@@ -5,7 +10,6 @@ import time
 import json
 from datetime import datetime
 
-# Dynamic path resolution to connect with local backend database
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(CURRENT_DIR)
 ROOT_DIR = os.path.dirname(SRC_DIR)
@@ -13,14 +17,12 @@ ROOT_DIR = os.path.dirname(SRC_DIR)
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-# Firestore Client, Theme & Backend Integration Imports
 from google.cloud.firestore_v1.base_query import FieldFilter
 from src.backend.db_manager import db, local_db
 from src.backend.drive_service import upload_files_to_drive_folder
 from src.frontend.theme import FieldFlowLightTheme
 
-# Modular Components & Shared Utilities
-from src.frontend.ticket_card_component import build_standard_ticket_card
+from src.frontend.cards_component import build_standard_ticket_card
 from src.frontend.shared_utils import show_toast, open_drive_link
 
 
@@ -47,18 +49,30 @@ def fetch_pending_tickets():
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT d.*, p.site_address, p.contractor_name, p.drive_id AS project_drive_id,
+                SELECT d.job_id, d.tbc_job_number, d.technician_email, d.sales_rep_email,
+                       d.scheduled_time, d.status, d.job_type,
+                       p.project_name, p.drive_id AS project_drive_id,
+                       l.street_address_1 || ', ' || l.city || ', ' || l.state AS site_address,
+                       c.company_name AS contractor_company_name,
+                       a.model_number, a.serial_number, a.equipment_tag,
+                       u.first_name AS sales_first_name, u.last_name AS sales_last_name,
+                       i.project_site_contact_first_name, i.project_site_contact_last_name,
+                       i.project_site_contact_phone,
                        ai.inspection_metrics
                 FROM dispatches d
                 LEFT JOIN projects p ON d.tbc_job_number = p.tbc_job_number
+                LEFT JOIN locations l ON p.site_name = l.site_name
+                LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                LEFT JOIN assets a ON p.tbc_job_number = a.tbc_job_number
+                LEFT JOIN intake_requests i ON d.tbc_job_number = i.tbc_job_number
+                LEFT JOIN users u ON i.sales_rep_email = u.user_email
                 LEFT JOIN asset_inspections ai ON d.job_id = ai.job_id
-                WHERE LOWER(TRIM(d.completion_status)) = 'pending'
+                WHERE LOWER(TRIM(d.status)) = 'pending'
             """)
             rows = cursor.fetchall()
             for row in rows:
                 r_dict = dict(row)
                 j_id = str(r_dict.get("job_id"))
-                tbc_num = str(r_dict.get("tbc_job_number") or "")
 
                 if r_dict.get("project_drive_id"):
                     r_dict["drive_id"] = r_dict["project_drive_id"]
@@ -71,23 +85,6 @@ def fetch_pending_tickets():
                         pass
                 r_dict["vfd_data"] = vfd_data
 
-                if tbc_num:
-                    cursor.execute("SELECT model_number, serial_number, asset_name FROM project_assets WHERE tbc_job_number = ? LIMIT 1", (tbc_num,))
-                    a_row = cursor.fetchone()
-                    if a_row:
-                        a_dict = dict(a_row)
-                        r_dict["model_number"] = a_dict.get("model_number")
-                        r_dict["serial_number"] = a_dict.get("serial_number")
-                        r_dict["asset_name"] = a_dict.get("asset_name")
-
-                    cursor.execute("SELECT project_site_contact_name, project_site_contact_phone, sales_team_email FROM intake_requests WHERE tbc_job_number = ? LIMIT 1", (tbc_num,))
-                    i_row = cursor.fetchone()
-                    if i_row:
-                        i_dict = dict(i_row)
-                        r_dict["project_site_contact_name"] = i_dict.get("project_site_contact_name")
-                        r_dict["project_site_contact_phone"] = i_dict.get("project_site_contact_phone")
-                        r_dict["sales_team_email"] = i_dict.get("sales_team_email")
-
                 if j_id:
                     tickets_map[j_id] = r_dict
     except Exception as e:
@@ -95,7 +92,7 @@ def fetch_pending_tickets():
 
     if db is not None:
         try:
-            dispatches_query = db.collection("dispatches").where(filter=FieldFilter("completion_status", "==", "Pending")).stream()
+            dispatches_query = db.collection("dispatches").where(filter=FieldFilter("status", "==", "Pending")).stream()
             for doc in dispatches_query:
                 ticket_data = doc.to_dict()
                 job_id = str(doc.id)
@@ -121,23 +118,23 @@ def fetch_pending_tickets():
                     if proj_doc.exists:
                         p_data = proj_doc.to_dict()
                         ticket_data["project_name"] = p_data.get("project_name")
-                        ticket_data["site_address"] = p_data.get("site_address")
-                        ticket_data["contractor_name"] = p_data.get("contractor_name")
+                        ticket_data["contractor_company_name"] = p_data.get("contractor_company_name")
                         ticket_data["drive_id"] = p_data.get("drive_id")
 
-                    asset_query = db.collection("project_assets").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
+                    asset_query = db.collection("assets").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
                     for a_doc in asset_query:
                         a_data = a_doc.to_dict()
                         ticket_data["model_number"] = a_data.get("model_number")
                         ticket_data["serial_number"] = a_data.get("serial_number")
-                        ticket_data["asset_name"] = a_data.get("asset_name")
+                        ticket_data["equipment_tag"] = a_data.get("equipment_tag")
 
-                    intake_query = db.collection("intake_ledger").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
+                    intake_query = db.collection("intake_requests").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
                     for i_doc in intake_query:
                         i_data = i_doc.to_dict()
-                        ticket_data["project_site_contact_name"] = i_data.get("project_site_contact_name")
+                        ticket_data["project_site_contact_first_name"] = i_data.get("project_site_contact_first_name")
+                        ticket_data["project_site_contact_last_name"] = i_data.get("project_site_contact_last_name")
                         ticket_data["project_site_contact_phone"] = i_data.get("project_site_contact_phone")
-                        ticket_data["sales_team_email"] = i_data.get("sales_team_email")
+                        ticket_data["sales_rep_email"] = i_data.get("sales_rep_email")
 
                 tickets_map[job_id] = ticket_data
         except Exception as e:
@@ -153,7 +150,7 @@ def mark_warranty_registration_complete(tbc_job_number: str, registration_file_n
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE projects SET stage = 'Completed' WHERE tbc_job_number = ?", (clean_job_num,))
-            cursor.execute("UPDATE dispatches SET completion_status = 'Completed' WHERE tbc_job_number = ?", (clean_job_num,))
+            cursor.execute("UPDATE dispatches SET status = 'Completed' WHERE tbc_job_number = ?", (clean_job_num,))
             conn.commit()
     except Exception as e:
         print(f"Error completing local warranty registration: {e}")
@@ -165,7 +162,7 @@ def mark_warranty_registration_complete(tbc_job_number: str, registration_file_n
         db.collection("projects").document(clean_job_num).set({"stage": "Completed"}, merge=True)
         disp_query = db.collection("dispatches").where(filter=FieldFilter("tbc_job_number", "==", clean_job_num)).stream()
         for doc in disp_query:
-            doc.reference.update({"completion_status": "Completed"})
+            doc.reference.update({"status": "Completed"})
         return True
     except Exception as e:
         print(f"Error completing cloud warranty registration: {e}")
@@ -179,7 +176,6 @@ def build_field_copy_card(
     show_toast_fn,
     icon_name=ft.icons.COPY
 ) -> ft.Container:
-    """Helper component that constructs an individual field copy card."""
     field_val = str(raw_val) if raw_val is not None and str(raw_val).strip() != "" else "N/A"
     
     def handle_copy_click(e):
@@ -265,11 +261,11 @@ def main(page: ft.Page):
         selected_ticket_state["ticket"] = ticket
         
         job_num = str(ticket.get("tbc_job_number") or "N/A")
-        client = str(ticket.get("contractor_name") or "Valued Client")
+        client = str(ticket.get("contractor_company_name") or "Valued Client")
         address = str(ticket.get("site_address") or "Address Unspecified")
         model = str(ticket.get("model_number") or "N/A")
         serial = str(ticket.get("serial_number") or "N/A")
-        site_contact = f"{ticket.get('project_site_contact_name') or 'Mike Smith'} ({ticket.get('project_site_contact_phone') or '813-555-0199'})"
+        site_contact = f"{ticket.get('project_site_contact_first_name', '')} {ticket.get('project_site_contact_last_name', '')} ({ticket.get('project_site_contact_phone', 'N/A')})".strip()
         tech_email = str(ticket.get("technician_email") or "tech1@tbcotampaservice.com")
         sched_date = str(ticket.get("scheduled_time") or datetime.now().strftime("%Y-%m-%d"))
 
@@ -508,7 +504,3 @@ def main(page: ft.Page):
     )
 
     refresh_desktop_portal_view()
-
-
-if __name__ == "__main__":
-    ft.app(target=main)

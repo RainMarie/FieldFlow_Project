@@ -1,7 +1,6 @@
 """
 src/frontend/mobile_suite.py
-Mobile interface for technicians to view assigned dispatches, inspect equipment assets, 
-log parts usage, and record inspection reports.
+Mobile interface for technicians using normalized assets queries and joined sales details.
 """
 
 import flet as ft
@@ -13,7 +12,6 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 
-# Dynamic path resolution to connect with local backend engines safely
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(CURRENT_DIR)
 ROOT_DIR = os.path.dirname(SRC_DIR)
@@ -21,22 +19,18 @@ ROOT_DIR = os.path.dirname(SRC_DIR)
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-# Firestore Client, Theme & Backend Integration Imports
 from google.cloud.firestore_v1.base_query import FieldFilter
-from src.backend.db_manager import db, local_db, record_job_part_used, execute_7_day_local_cache_sweep
+from src.backend.db_manager import db, local_db, record_job_part_used
 from src.frontend.theme import FieldFlowLightTheme
 
-# Shared Utilities & Modular Component Imports
 from src.frontend.shared_utils import show_toast, open_drive_link, open_navigation_map
-from src.frontend.ticket_card_component import build_standard_ticket_card
-from src.frontend.asset_card_component import build_site_asset_card, build_visit_history_card
+from src.frontend.cards_component import build_standard_ticket_card, build_site_asset_card, build_visit_history_card
 from src.frontend.vfd_form_component import build_vfd_service_form
-from src.frontend.asset_form_component import build_asset_registration_tool
+from src.frontend.forms_component import build_asset_registration_tool
 from src.frontend.technician_clock_component import build_technician_clock, update_dispatch_status
 
 
 def update_project_asset_details(tbc_job_number: str, old_serial: str, new_name: str, new_serial: str, new_model: str) -> bool:
-    """Updates asset tags, serials, and models in the normalized assets table."""
     clean_job_num = str(tbc_job_number or "").strip()
     try:
         with local_db.get_connection() as conn:
@@ -69,7 +63,6 @@ def update_project_asset_details(tbc_job_number: str, old_serial: str, new_name:
 
 
 def log_part_usage_submission(job_id: str, sku: str, qty: float, is_unlisted: bool, description: str, cost: float) -> str:
-    """Submits used parts to SQLite, explicitly passing sku = None when logging unlisted items."""
     actual_sku = None if is_unlisted else sku
     return record_job_part_used(
         job_id=job_id,
@@ -123,7 +116,7 @@ def main(page: ft.Page):
         def handle_service_form_submit(asset_serial, target_status, metrics_payload):
             update_dispatch_status(job_id, target_status)
             serviced_assets_cache[str(asset_serial)] = {"status": "Serviced", "metrics": metrics_payload}
-            job_data["completion_status"] = target_status
+            job_data["status"] = target_status
 
             if is_vfd:
                 show_toast_local("📌 Report Saved! Held as PENDING for Sidecar Portal.", kind="warning")
@@ -147,14 +140,13 @@ def main(page: ft.Page):
         tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
         asset_id = str(asset_data.get("asset_id") or "")
         
-        asset_name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name") or "Site Equipment")
-        asset_model = str(asset_data.get("model_number") or "N/A")
-        asset_serial = str(asset_data.get("serial_number") or "N/A")
-        installed_date = str(asset_data.get("installation_date") or asset_data.get("installed_date") or "Recently Installed")
+        asset_name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name", "Site Equipment"))
+        asset_model = str(asset_data.get("model_number", "N/A"))
+        asset_serial = str(asset_data.get("serial_number", "N/A"))
+        installed_date = str(asset_data.get("installation_date", "Recently Installed"))
 
         is_serviced = serviced_assets_cache.get(asset_serial, {}).get("status") == "Serviced"
 
-        # Query all historical asset inspections linked to this asset across dispatches
         inspection_history = []
         if asset_id:
             try:
@@ -318,7 +310,7 @@ def main(page: ft.Page):
         drive_id = str(job_data.get('drive_id') or f"FLD-DRIVE-{tbc_job_num}")
 
         sales_team_name = "Tampa HVAC Sales Team"
-        sales_rep_contact = "Alice Vance (813-555-1111)"
+        sales_rep_contact = "sales1@tombarrow.com"
         site_contact_info = "Mike Smith (813-555-0199)"
         request_scope_info = str(job_data.get("issue_description") or "Annual Preventative Maintenance & Firmware Flash")
 
@@ -339,7 +331,7 @@ def main(page: ft.Page):
                 previous_visits_list = [dict(r) for r in cursor.fetchall()]
 
                 cursor.execute("""
-                    SELECT i.issue_description, i.sales_rep_email, u.user_name AS sales_team
+                    SELECT i.issue_description, i.sales_rep_email, (u.first_name || ' ' || u.last_name) AS sales_full_name
                     FROM intake_requests i
                     LEFT JOIN users u ON i.sales_rep_email = u.user_email
                     WHERE i.tbc_job_number = ? LIMIT 1
@@ -347,9 +339,12 @@ def main(page: ft.Page):
                 i_row = cursor.fetchone()
                 if i_row:
                     i_dict = dict(i_row)
-                    if i_dict.get("sales_team"): sales_team_name = str(i_dict.get("sales_team"))
-                    if i_dict.get("sales_rep_email"): sales_rep_contact = str(i_dict.get("sales_rep_email"))
-                    if i_dict.get("issue_description"): request_scope_info = str(i_dict.get("issue_description"))
+                    if i_dict.get("sales_full_name") and i_dict["sales_full_name"].strip(): 
+                        sales_team_name = str(i_dict["sales_full_name"])
+                    if i_dict.get("sales_rep_email"): 
+                        sales_rep_contact = str(i_dict["sales_rep_email"])
+                    if i_dict.get("issue_description"): 
+                        request_scope_info = str(i_dict["issue_description"])
         except Exception as err:
             print(f"Local briefing query note: {err}")
 
@@ -358,7 +353,7 @@ def main(page: ft.Page):
                 disp_doc = db.collection("dispatches").document(job_id).get()
                 if disp_doc.exists:
                     disp_data = disp_doc.to_dict()
-                    job_data["completion_status"] = str(disp_data.get("status", job_data.get("completion_status")))
+                    job_data["status"] = str(disp_data.get("status", job_data.get("status")))
                     job_type = str(disp_data.get("job_type", job_type))
 
                 assets_query = db.collection("assets").where(filter=FieldFilter("tbc_job_number", "==", tbc_job_num)).stream()
@@ -380,7 +375,7 @@ def main(page: ft.Page):
             )
         else:
             for asset in project_assets_list:
-                a_serial = str(asset.get("serial_number") or "N/A")
+                a_serial = str(asset.get("serial_number", "N/A"))
                 is_serviced = serviced_assets_cache.get(a_serial, {}).get("status") == "Serviced"
 
                 asset_card = build_site_asset_card(
@@ -426,10 +421,10 @@ def main(page: ft.Page):
                     clock_component
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 
-                ft.Text(str(job_data.get("contractor_name", "Tampa Chiller Services Inc")), size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY),
+                ft.Text(str(job_data.get("contractor_company_name", "Tampa Chiller Services Inc")), size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY),
                 ft.Text(f"📍 Address: {address}", size=12, color=FieldFlowLightTheme.TEXT_MUTED),
                 ft.Text(f"👤 Site Contact: {site_contact_info}", size=12, color=FieldFlowLightTheme.TEXT_MUTED),
-                ft.Text(f"💼 Sales Team: {sales_team_name} ({sales_rep_contact})", size=12, color=FieldFlowLightTheme.ACCENT_BLUE, weight=ft.FontWeight.W_500),
+                ft.Text(f"💼 Sales Rep: {sales_team_name} ({sales_rep_contact})", size=12, color=FieldFlowLightTheme.ACCENT_BLUE, weight=ft.FontWeight.W_500),
                 ft.Text(f"🔧 Request Scope: {request_scope_info}", size=12, italic=True, color=FieldFlowLightTheme.ACCENT_BLUE),
                 
                 ft.Row([
@@ -479,7 +474,7 @@ def main(page: ft.Page):
         value=tech_identity["email"],
         options=[
             ft.dropdown.Option("tech1@tbcotampaservice.com", "Tech One (Bob)"),
-            ft.dropdown.Option("tech2@tbcotampaservice.com", "Tech Two (Alex)"),
+            ft.dropdown.Option("tech2@tbcotampaservice.com", "Alex Tech (tech2@tbcotampaservice.com)"),
             ft.dropdown.Option("admin@tombarrow.com", "Office Admin (Alice)")
         ],
         border_color=FieldFlowLightTheme.ACCENT_BLUE,
@@ -504,10 +499,15 @@ def main(page: ft.Page):
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT d.*, p.site_name AS site_address, i.issue_description
+                    SELECT d.*, 
+                           l.street_address_1 || ', ' || l.city || ', ' || l.state AS site_address,
+                           i.issue_description, i.contractor_company_name, i.site_name, i.project_name,
+                           u.first_name AS sales_first_name, u.last_name AS sales_last_name
                     FROM dispatches d
                     LEFT JOIN projects p ON d.tbc_job_number = p.tbc_job_number
+                    LEFT JOIN locations l ON p.site_name = l.site_name
                     LEFT JOIN intake_requests i ON d.tbc_job_number = i.tbc_job_number
+                    LEFT JOIN users u ON i.sales_rep_email = u.user_email
                     WHERE LOWER(d.technician_email) = LOWER(?)
                 """, (tech_identity["email"],))
                 rows = cursor.fetchall()
@@ -540,8 +540,8 @@ def main(page: ft.Page):
         assigned_jobs = []
 
         for job in raw_jobs:
-            status = (job.get("status") or job.get("completion_status") or "Scheduled").strip()
-            sched_time = str(job.get("scheduled_time") or "")
+            status = str(job.get("status", "Scheduled")).strip()
+            sched_time = str(job.get("scheduled_time", ""))
 
             if status == "Completed":
                 job_date = sched_time.split("T")[0] if "T" in sched_time else sched_time.split(" ")[0]
@@ -551,13 +551,13 @@ def main(page: ft.Page):
             assigned_jobs.append(job)
 
         def get_dispatches_priority(job):
-            status = (job.get("status") or job.get("completion_status") or "Scheduled").strip()
+            status = str(job.get("status", "Scheduled")).strip()
             if status == "Pending":
-                return (0, str(job.get("scheduled_time") or ""))
+                return (0, str(job.get("scheduled_time", "")))
             elif status == "Completed":
-                return (2, str(job.get("scheduled_time") or ""))
+                return (2, str(job.get("scheduled_time", "")))
             else:
-                return (1, str(job.get("scheduled_time") or ""))
+                return (1, str(job.get("scheduled_time", "")))
 
         assigned_jobs.sort(key=get_dispatches_priority)
 
@@ -608,7 +608,6 @@ def main(page: ft.Page):
         render_viewport(feed_layout)
 
     load_chronological_feed_view()
-    execute_7_day_local_cache_sweep()
 
 
 if __name__ == "__main__":
