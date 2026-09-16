@@ -1,0 +1,125 @@
+Database Layer,Table / Collection Name,Field / Column Name,Data Type,Key Role,Foreign Key Reference,Firestore Equivalent Collection,Parity Match Status
+SQLite,locations,site_name,TEXT,Primary Key,N/A,locations,1-to-1 Match
+SQLite,locations,street_address_1,TEXT,Standard Column,N/A,locations,1-to-1 Match
+SQLite,locations,street_address_2,TEXT,Standard Column,N/A,locations,1-to-1 Match
+SQLite,locations,city,TEXT,Standard Column,N/A,locations,1-to-1 Match
+SQLite,locations,state,TEXT,Standard Column,N/A,locations,1-to-1 Match
+SQLite,locations,postal_code,TEXT,Standard Column,N/A,locations,1-to-1 Match
+SQLite,locations,country,TEXT,Standard Column,N/A,locations,1-to-1 Match
+SQLite,locations,site_contact_id,TEXT,Foreign Key,contacts(contact_id),locations,Missing in Firestore Sample
+SQLite,contractors,tbco_account_number,TEXT,Primary Key,N/A,contractors,1-to-1 Match
+SQLite,contractors,company_name,TEXT,Standard Column,N/A,contractors,1-to-1 Match
+SQLite,contractors,trade_specialty,TEXT,Standard Column,N/A,contractors,1-to-1 Match
+SQLite,users,user_email,TEXT,Primary Key,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,users,first_name,TEXT,Standard Column,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,users,last_name,TEXT,Standard Column,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,users,user_phone,TEXT,Standard Column,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,users,position,TEXT,Standard Column,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,users,branch_city,TEXT,Standard Column,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,users,active_status,TEXT,Standard Column,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,users,role,TEXT,Standard Column,N/A,users,Firestore Collection Empty / Unsampled
+SQLite,contacts,contact_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,contacts,tbco_account_number,TEXT,Foreign Key,contractors(tbco_account_number),N/A (Local Only),Local SQLite Table Only
+SQLite,contacts,first_name,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,contacts,last_name,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,contacts,title,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,contacts,phone,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,contacts,email,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,contacts,is_primary_contact,INTEGER,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,trucks,truck_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,trucks,truck_number,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,trucks,assigned_tech_email,TEXT,Foreign Key,users(user_email),N/A (Local Only),Local SQLite Table Only
+SQLite,manufacturers,manufacturer_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,manufacturers,company_name,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,manufacturers,mfr_contact_first_name,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,manufacturers,mfr_contact_last_name,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,manufacturers,email,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,manufacturers,phone,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,manufacturers,website,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,parts_master,sku,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,parts_master,manufacturer,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,parts_master,part_description,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,parts_master,unit_cost,REAL,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,projects,tbc_job_number,TEXT,Primary Key,N/A,projects,1-to-1 Match
+SQLite,projects,site_name,TEXT,Foreign Key,locations(site_name),projects,1-to-1 Match
+SQLite,projects,tbco_account_number,TEXT,Foreign Key,contractors(tbco_account_number),projects,1-to-1 Match
+SQLite,projects,pm_contact_id,TEXT,Foreign Key,contacts(contact_id),projects,Missing in Firestore Sample
+SQLite,projects,project_name,TEXT,Standard Column,N/A,projects,1-to-1 Match
+SQLite,projects,drive_id,TEXT,Standard Column,N/A,projects,Missing in Firestore Sample
+SQLite,projects,stage,TEXT,Standard Column,N/A,projects,1-to-1 Match
+SQLite,intake_requests,request_id,TEXT,Primary Key,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,tbc_job_number,TEXT,Foreign Key,projects(tbc_job_number),intake_ledger,1-to-1 Match
+SQLite,intake_requests,team_code,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,site_name,TEXT,Foreign Key,locations(site_name),intake_ledger,1-to-1 Match
+SQLite,intake_requests,project_name,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,contractor_company_name,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,street_address_1,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,street_address_2,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,city,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,state,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,postal_code,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,country,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,sales_rep_first_name,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,sales_rep_last_name,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,sales_rep_email,TEXT,Foreign Key,users(user_email),intake_ledger,1-to-1 Match
+SQLite,intake_requests,sales_rep_phone,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,project_site_contact_first_name,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,project_site_contact_last_name,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,project_site_contact_email,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,project_site_contact_phone,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,issue_description,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,triage_status,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,request_type,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,intake_requests,submission_timestamp,TEXT,Standard Column,N/A,intake_ledger,1-to-1 Match
+SQLite,dispatches,job_id,TEXT,Primary Key,N/A,dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,tbc_job_number,TEXT,Foreign Key,projects(tbc_job_number),dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,technician_email,TEXT,Foreign Key,users(user_email),dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,sales_rep_email,TEXT,Foreign Key,users(user_email),dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,scheduled_time,TEXT,Standard Column,N/A,dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,status,TEXT,Standard Column,N/A,dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,job_type,TEXT,Standard Column,N/A,dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,google_calendar_event_id,TEXT,Standard Column,N/A,dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,last_mutation_token,TEXT,Standard Column,N/A,dispatches,Firestore Collection Empty / Unsampled
+SQLite,dispatches,report_metrics,TEXT,Standard Column,N/A,dispatches,Firestore Collection Empty / Unsampled
+SQLite,assets,asset_id,TEXT,Primary Key,N/A,assets,Firestore Collection Empty / Unsampled
+SQLite,assets,tbc_job_number,TEXT,Foreign Key,projects(tbc_job_number),assets,Firestore Collection Empty / Unsampled
+SQLite,assets,site_name,TEXT,Foreign Key,locations(site_name),assets,Firestore Collection Empty / Unsampled
+SQLite,assets,manufacturer_id,TEXT,Foreign Key,manufacturers(manufacturer_id),assets,Firestore Collection Empty / Unsampled
+SQLite,assets,model_number,TEXT,Standard Column,N/A,assets,Firestore Collection Empty / Unsampled
+SQLite,assets,serial_number,TEXT,Standard Column,N/A,assets,Firestore Collection Empty / Unsampled
+SQLite,assets,equipment_tag,TEXT,Standard Column,N/A,assets,Firestore Collection Empty / Unsampled
+SQLite,assets,installation_date,TEXT,Standard Column,N/A,assets,Firestore Collection Empty / Unsampled
+SQLite,assets,warranty_expiration_date,TEXT,Standard Column,N/A,assets,Firestore Collection Empty / Unsampled
+SQLite,assets,operational_status,TEXT,Standard Column,N/A,assets,Firestore Collection Empty / Unsampled
+SQLite,inventory,inventory_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,inventory,truck_id,TEXT,Foreign Key,trucks(truck_id),N/A (Local Only),Local SQLite Table Only
+SQLite,inventory,sku,TEXT,Foreign Key,parts_master(sku),N/A (Local Only),Local SQLite Table Only
+SQLite,inventory,truck_stock_qty,INTEGER,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,inventory,baseline_quota,INTEGER,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,time_entries,entry_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,time_entries,job_id,TEXT,Foreign Key,dispatches(job_id),N/A (Local Only),Local SQLite Table Only
+SQLite,time_entries,tech_email,TEXT,Foreign Key,users(user_email),N/A (Local Only),Local SQLite Table Only
+SQLite,time_entries,entry_type,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,time_entries,start_timestamp,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,time_entries,end_timestamp,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,time_entries,duration_hours,REAL,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,asset_inspections,report_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,asset_inspections,job_id,TEXT,Foreign Key,dispatches(job_id),N/A (Local Only),Local SQLite Table Only
+SQLite,asset_inspections,asset_id,TEXT,Foreign Key,assets(asset_id),N/A (Local Only),Local SQLite Table Only
+SQLite,asset_inspections,registration_status,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,asset_inspections,inspection_metrics,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,usage_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,job_id,TEXT,Foreign Key,dispatches(job_id),N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,sku,TEXT,Foreign Key,parts_master(sku),N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,qty_used,REAL,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,is_unlisted,INTEGER,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,unlisted_description,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,manual_cost,REAL,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,job_parts_used,cost_status,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,audit_log,log_id,TEXT,Primary Key,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,audit_log,user_email,TEXT,Foreign Key,users(user_email),N/A (Local Only),Local SQLite Table Only
+SQLite,audit_log,entity_type,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,audit_log,entity_id,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,audit_log,timestamp,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,audit_log,old_value,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
+SQLite,audit_log,new_value,TEXT,Standard Column,N/A,N/A (Local Only),Local SQLite Table Only
