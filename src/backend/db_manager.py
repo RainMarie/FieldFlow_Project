@@ -220,7 +220,7 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # 9. INTAKE REQUESTS (FULLY STANDARDIZED WITH 24 COLUMNS)
+            # 9. INTAKE REQUESTS (NORMALIZED SCHEMA: SALES REP FK ONLY)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS intake_requests (
                     request_id TEXT PRIMARY KEY,
@@ -235,8 +235,6 @@ class LocalDatabaseManager:
                     state TEXT,
                     postal_code TEXT,
                     country TEXT DEFAULT 'US',
-                    sales_rep_first_name TEXT,
-                    sales_rep_last_name TEXT,
                     sales_rep_email TEXT,
                     sales_rep_phone TEXT,
                     project_site_contact_first_name TEXT,
@@ -473,6 +471,7 @@ def resolve_sales_user(
     user_email: str,
     first_name: Optional[str] = None,
     last_name: Optional[str] = None,
+    user_phone: Optional[str] = None,
     branch_city: Optional[str] = None
 ) -> str:
     clean_email = user_email.strip().lower()
@@ -492,6 +491,7 @@ def resolve_sales_user(
         "user_email": clean_email,
         "first_name": f_name,
         "last_name": l_name,
+        "user_phone": user_phone,
         "branch_city": branch_city,
         "role": "Sales",
         "active_status": "Active"
@@ -508,12 +508,17 @@ def resolve_sales_user(
         cursor.execute("SELECT user_email FROM users WHERE LOWER(user_email) = ?", (clean_email,))
         row = cursor.fetchone()
         if row:
+            cursor.execute("""
+                UPDATE users SET first_name = ?, last_name = ?, user_phone = COALESCE(?, user_phone)
+                WHERE LOWER(user_email) = ?
+            """, (f_name, l_name, user_phone, clean_email))
+            conn.commit()
             return row["user_email"]
 
         cursor.execute("""
-            INSERT INTO users (user_email, first_name, last_name, branch_city, role)
-            VALUES (?, ?, ?, ?, 'Sales')
-        """, (clean_email, f_name, l_name, branch_city))
+            INSERT INTO users (user_email, first_name, last_name, user_phone, branch_city, role)
+            VALUES (?, ?, ?, ?, ?, 'Sales')
+        """, (clean_email, f_name, l_name, user_phone, branch_city))
         conn.commit()
         return clean_email
 
@@ -572,10 +577,19 @@ def resolve_pm_contact(
 
 
 def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
-    """Executes atomic service intake transaction using standardized 24-field names."""
+    """Executes atomic service intake transaction using normalized intake_requests schema."""
     req_id = form_data.get("request_id") or f"REQ-{uuid.uuid4().hex[:8].upper()}"
     job_no = form_data.get("tbc_job_number", "889900XX").strip().upper()
     submission_time = form_data.get("submission_timestamp") or datetime.now(timezone.utc).isoformat()
+
+    sales_email = (form_data.get("sales_rep_email") or "").strip().lower()
+    if sales_email:
+        resolve_sales_user(
+            user_email=sales_email,
+            first_name=form_data.get("sales_rep_first_name", ""),
+            last_name=form_data.get("sales_rep_last_name", ""),
+            user_phone=form_data.get("sales_rep_phone", "")
+        )
 
     standardized_payload = {
         "request_id": req_id,
@@ -590,9 +604,7 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "state": form_data.get("state", ""),
         "postal_code": form_data.get("postal_code", ""),
         "country": form_data.get("country", "US"),
-        "sales_rep_first_name": form_data.get("sales_rep_first_name", ""),
-        "sales_rep_last_name": form_data.get("sales_rep_last_name", ""),
-        "sales_rep_email": form_data.get("sales_rep_email", ""),
+        "sales_rep_email": sales_email,
         "sales_rep_phone": form_data.get("sales_rep_phone", ""),
         "project_site_contact_first_name": form_data.get("project_site_contact_first_name", ""),
         "project_site_contact_last_name": form_data.get("project_site_contact_last_name", ""),
@@ -604,14 +616,14 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "submission_timestamp": submission_time
     }
 
-    # Step A: Primary Cloud Write to Firestore 'intake_ledger'
+    # Primary Cloud Write to Firestore 'intake_requests' collection
     if db is not None:
         try:
-            db.collection("intake_ledger").document(req_id).set(standardized_payload, merge=True)
+            db.collection("intake_requests").document(req_id).set(standardized_payload, merge=True)
         except Exception as err:
             logging.warning(f"Cloud transaction note: {err}")
 
-    # Step B: Offline Local SQLite Mirror
+    # Offline Local SQLite Mirror
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN TRANSACTION;")
@@ -620,11 +632,11 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
             INSERT OR REPLACE INTO intake_requests (
                 request_id, tbc_job_number, team_code, site_name, project_name,
                 contractor_company_name, street_address_1, street_address_2, city, state,
-                postal_code, country, sales_rep_first_name, sales_rep_last_name, sales_rep_email,
-                sales_rep_phone, project_site_contact_first_name, project_site_contact_last_name,
+                postal_code, country, sales_rep_email, sales_rep_phone,
+                project_site_contact_first_name, project_site_contact_last_name,
                 project_site_contact_email, project_site_contact_phone, issue_description,
                 triage_status, request_type, submission_timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, tuple(standardized_payload.values()))
 
         conn.commit()

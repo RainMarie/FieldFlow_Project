@@ -1,7 +1,6 @@
 """
 src/backend/search_engine.py
 Dedicated query execution engine for Admin Portal and Mobile Suite application search views.
-Utilizes database indexes on site_name, company_name, equipment_tag, and part_description.
 """
 
 import logging
@@ -13,8 +12,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
     """
-    Executes a multi-table search across Projects, Contractors, Users, and Intake Requests
-    for administrative dashboard workflows. Uses indexes on site_name and company_name.
+    Executes a multi-table search across Projects, Contractors, Users, and Intake Requests.
+    Concatenates first_name and last_name for user lookups.
     """
     clean_term = str(search_term or "").strip().lower()
     if not clean_term:
@@ -40,9 +39,9 @@ def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
                 
                 UNION ALL
                 
-                SELECT 'User' AS category, u.user_email AS key_id, u.user_name || ' (' || u.role || ')' AS detail 
+                SELECT 'User' AS category, u.user_email AS key_id, (u.first_name || ' ' || u.last_name || ' (' || u.role || ')') AS detail 
                 FROM users u
-                WHERE LOWER(u.user_email) LIKE ? OR LOWER(u.user_name) LIKE ?
+                WHERE LOWER(u.user_email) LIKE ? OR LOWER(u.first_name || ' ' || u.last_name) LIKE ?
                 
                 UNION ALL
                 
@@ -63,7 +62,6 @@ def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
 def search_mobile_portal(search_term: str, tech_email: str) -> List[Dict[str, Any]]:
     """
     Executes a technician-scoped search across Dispatches, Equipment Assets, and Parts Catalog.
-    Uses indexes on equipment_tag and part_description.
     """
     clean_term = str(search_term or "").strip().lower()
     clean_tech = str(tech_email or "").strip().lower()
@@ -102,9 +100,3 @@ def search_mobile_portal(search_term: str, tech_email: str) -> List[Dict[str, An
         logging.error(f"Error executing mobile portal search for '{search_term}': {err}")
             
     return results
-
-
-if __name__ == "__main__":
-    print("Testing Search Engine Module...")
-    admin_results = search_admin_portal("test")
-    print(f"Admin Search Returned {len(admin_results)} records.")
