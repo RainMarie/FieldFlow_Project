@@ -230,6 +230,7 @@
 **Defined Functions/Classes:**
 - `def make_field(label_text: str, input_control: ft.Control, expand: bool = True) -> ft.Container:`
 - `def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
+- `def on_sales_email_blur(e):`
 - `def on_photo_picked(e: ft.FilePickerResultEvent):`
 - `def on_docs_picked(e: ft.FilePickerResultEvent):`
 - `def clear_form(e=None):`
@@ -237,7 +238,6 @@
 - `def build_asset_registration_tool(`
 - `def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
 - `def submit_part(e):`
-- `def build_manufacturer_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
 
 ### 📄 main.py
 **Defined Functions/Classes:**
