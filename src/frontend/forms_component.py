@@ -20,12 +20,10 @@ from src.backend.db_manager import (
     local_db, 
     db as firestore_db, 
     resolve_location, 
-    resolve_contractor,
-    resolve_sales_user
+    resolve_contractor
 )
 from src.backend.drive_service import ensure_project_drive_folder
 from src.frontend.shared_utils import find_any_local_logo, show_toast
-from src.backend.lifecycle_rules import validate_user_role_permission, validate_intake_form_data
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -51,12 +49,14 @@ def make_field(label_text: str, input_control: ft.Control, expand: bool = True) 
 # =========================================================================
 
 def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:
+    # 1. Core Project Controls
     tf_job_num = ft.TextField(label="TBCo Job #*", hint_text="e.g. 287027TI", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_po_num = ft.TextField(label="PO #", hint_text="e.g. PO-88210", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    # 2. Location & Address Controls
     tf_street_1 = ft.TextField(label="Street Address 1*", hint_text="e.g. 500 Medical Way", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_street_2 = ft.TextField(label="Street Address 2 / Suite", hint_text="e.g. Suite 300", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_city = ft.TextField(label="City*", hint_text="e.g. Tampa", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -67,13 +67,20 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_company = ft.TextField(label="Contractor Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_company_acct = ft.TextField(label="Company Account #", hint_text="e.g. ACME-0091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # Standardized Sales Rep Controls (Matching Service Request Intake Form)
+    # 3. Project Site Contact Controls
+    tf_contact_first = ft.TextField(label="Site Contact First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_contact_last = ft.TextField(label="Site Contact Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_contact_email = ft.TextField(label="Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_contact_phone = ft.TextField(label="Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+
+    # 4. Sales Rep Controls
     tf_sales_first = ft.TextField(label="Sales Rep First Name", hint_text="e.g. Jane", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_last = ft.TextField(label="Sales Rep Last Name", hint_text="e.g. Doe", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_email = ft.TextField(label="Sales Rep Email", hint_text="e.g. jdoe@tombarrow.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_phone = ft.TextField(label="Sales Rep Phone", hint_text="e.g. 813-555-0144", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     dd_team_code = ft.Dropdown(label="Team Code", options=[ft.dropdown.Option(code) for code in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    # 5. File Upload Controls & Status
     staged_photo_path = {"value": ""}
     staged_documents = []
 
@@ -84,7 +91,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         if e.files:
             selected_file = e.files[0]
             staged_photo_path["value"] = selected_file.path if hasattr(selected_file, 'path') and selected_file.path else selected_file.name
-            photo_status_txt.value = f"📷 Photo Staged: {os.path.basename(staged_photo_path['value'])}"
+            photo_status_txt.value = f"Photo Staged: {os.path.basename(staged_photo_path['value'])}"
             photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
             page.update()
 
@@ -93,13 +100,26 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             staged_documents.clear()
             for f in e.files:
                 staged_documents.append(f.path if hasattr(f, 'path') and f.path else f.name)
-            docs_status_txt.value = f"📄 {len(staged_documents)} Document(s) Staged"
+            docs_status_txt.value = f"{len(staged_documents)} Document(s) Staged"
             docs_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
             page.update()
 
     photo_picker = ft.FilePicker(on_result=on_photo_picked)
     docs_picker = ft.FilePicker(on_result=on_docs_picked)
     page.overlay.extend([photo_picker, docs_picker])
+
+    btn_upload_photo = ft.OutlinedButton(
+        "Select Photo",
+        icon=ft.icons.IMAGE,
+        style=FieldFlowLightTheme.get_secondary_button_style(),
+        on_click=lambda _: photo_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
+    )
+    btn_upload_docs = ft.OutlinedButton(
+        "Upload Documents",
+        icon=ft.icons.ATTACH_FILE,
+        style=FieldFlowLightTheme.get_secondary_button_style(),
+        on_click=lambda _: docs_picker.pick_files(allow_multiple=True)
+    )
 
     def clear_form(e=None):
         tf_job_num.value = ""
@@ -115,6 +135,11 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         tf_state.value = ""
         tf_postal_code.value = ""
         tf_country.value = "US"
+
+        tf_contact_first.value = ""
+        tf_contact_last.value = ""
+        tf_contact_email.value = ""
+        tf_contact_phone.value = ""
 
         tf_sales_first.value = ""
         tf_sales_last.value = ""
@@ -153,7 +178,17 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         clean_site = resolve_location(s_name, street_1, street_2, city_val, state_val, zip_val, country_val)
         clean_acct = resolve_contractor(acct_no, company)
 
-        # Standardized Payload using identical keys as build_service_intake_form
+        # Automatically Provision Google Drive Folder inside Shared Drive
+        drive_info = ensure_project_drive_folder(
+            job_number=job_num,
+            project_name=p_name,
+            requestor_name=f"{tf_sales_first.value} {tf_sales_last.value}".strip(),
+            requestor_email=tf_sales_email.value.strip().lower() if tf_sales_email.value else "",
+            attached_file_paths=staged_documents
+        )
+        drive_id = drive_info.get("drive_id", f"FLD-GDRV-{job_num}")
+
+        # Complete Payload for Cloud Storage
         proj_payload = {
             "tbc_job_number": job_num,
             "site_name": clean_site,
@@ -167,36 +202,35 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "state": state_val,
             "postal_code": zip_val,
             "country": country_val,
+            "project_site_contact_first_name": tf_contact_first.value.strip() if tf_contact_first.value else "",
+            "project_site_contact_last_name": tf_contact_last.value.strip() if tf_contact_last.value else "",
+            "project_site_contact_email": tf_contact_email.value.strip().lower() if tf_contact_email.value else "",
+            "project_site_contact_phone": tf_contact_phone.value.strip() if tf_contact_phone.value else "",
             "sales_rep_first_name": tf_sales_first.value.strip() if tf_sales_first.value else "",
             "sales_rep_last_name": tf_sales_last.value.strip() if tf_sales_last.value else "",
             "sales_rep_email": tf_sales_email.value.strip().lower() if tf_sales_email.value else "",
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "team_code": dd_team_code.value if dd_team_code.value else "",
+            "drive_id": drive_id,
             "stage": "In Progress"
         }
 
+        # SQLite Insert matching STRICT 6-column schema
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
-                        tbc_job_number, site_name, tbco_account_number, project_name,
-                        sales_rep_first_name, sales_rep_last_name, sales_rep_email,
-                        sales_rep_phone, team_code, stage
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        tbc_job_number, site_name, tbco_account_number, project_name, drive_id, stage
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                 """, (
-                    job_num, clean_site, clean_acct, p_name,
-                    proj_payload["sales_rep_first_name"],
-                    proj_payload["sales_rep_last_name"],
-                    proj_payload["sales_rep_email"],
-                    proj_payload["sales_rep_phone"],
-                    proj_payload["team_code"],
-                    "In Progress"
+                    job_num, clean_site, clean_acct, p_name, drive_id, "In Progress"
                 ))
                 conn.commit()
         except Exception as sql_err:
             logging.error(f"SQLite project insert error: {sql_err}")
 
+        # Sync complete payload to Cloud Firestore
         if firestore_db is not None:
             try:
                 firestore_db.collection("projects").document(job_num).set(proj_payload, merge=True)
@@ -216,8 +250,12 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal_code, tf_country], spacing=8),
             ft.Row([tf_company, tf_company_acct], spacing=10),
+            ft.Row([tf_contact_first, tf_contact_last], spacing=10),
+            ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
             ft.Row([tf_sales_email, tf_sales_phone, dd_team_code], spacing=10),
+            ft.Row([btn_upload_photo, photo_status_txt], spacing=10),
+            ft.Row([btn_upload_docs, docs_status_txt], spacing=10),
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.ElevatedButton("Create Project", icon=ft.icons.FOLDER, style=FieldFlowLightTheme.get_primary_button_style(), on_click=submit_project_creation)
         ], spacing=10, scroll=ft.ScrollMode.AUTO, tight=True),
@@ -242,7 +280,6 @@ def build_asset_registration_tool(
     page: ft.Page
 ) -> ft.Column:
     tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
-    asset_photo_captured = {"value": False}
 
     search_input_field = ft.TextField(label="Search Equipment Serial Number...", prefix_icon=ft.icons.SEARCH, border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     serial_field_confirm = ft.TextField(label="Asset Serial Number*", border_color=FieldFlowLightTheme.ACCENT_BLUE)
@@ -368,20 +405,17 @@ def build_service_intake_form(
 ) -> ft.Control:
     """Form to submit new service intake requests using standardized field names across all layers."""
     
-    # 1. Sales Rep Details Controls
     tf_sales_first = ft.TextField(label="Sales Rep First Name*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_last = ft.TextField(label="Sales Rep Last Name*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_email = ft.TextField(label="Sales Rep Email*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_phone = ft.TextField(label="Sales Rep Phone", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     dd_team_code = ft.Dropdown(label="Team Code*", options=[ft.dropdown.Option(c) for c in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 2. Job & Site Details Controls
     tf_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_company = ft.TextField(label="Contractor / Client Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 3. Address Details Controls
     tf_street_1 = ft.TextField(label="Street Address 1*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_street_2 = ft.TextField(label="Street Address 2 / Unit", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_city = ft.TextField(label="City*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -389,13 +423,11 @@ def build_service_intake_form(
     tf_postal = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 4. Project Site Contact Details Controls
     tf_contact_first = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_last = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 5. Service Request Type & Issue Description Controls
     dd_request_type = ft.Dropdown(
         label="Request Type*",
         options=[
@@ -410,12 +442,10 @@ def build_service_intake_form(
     )
     tf_issue = ft.TextField(label="Issue Description*", multiline=True, min_lines=2, max_lines=4, border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
-    # 6. Dispatch & Scheduling Controls (Technician & Date/Time)
     tech_options = get_tech_options_fn() if get_tech_options_fn else []
     dd_technician = ft.Dropdown(label="Assigned Technician", options=tech_options, border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_scheduled_time = ft.TextField(label="Scheduled Date & Time Assigned", hint_text="e.g. 2026-09-20 09:00", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 7. File Upload Picker & Status
     staged_documents = []
     docs_status_txt = ft.Text("No Staged Documents", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
 
@@ -424,7 +454,7 @@ def build_service_intake_form(
             staged_documents.clear()
             for f in e.files:
                 staged_documents.append(f.path if hasattr(f, 'path') and f.path else f.name)
-            docs_status_txt.value = f"📄 {len(staged_documents)} Document(s) Staged"
+            docs_status_txt.value = f"{len(staged_documents)} Document(s) Staged"
             docs_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
             if page:
                 page.update()
@@ -434,24 +464,20 @@ def build_service_intake_form(
         page.overlay.append(docs_picker)
 
     def populate_data(proj_data: dict):
-        """Pre-fills form controls directly from a project card dictionary payload."""
         if not isinstance(proj_data, dict):
             return
 
-        # 1. Sales Rep Details Pre-Fill (Fixes validation freeze)
         tf_sales_first.value = proj_data.get("sales_rep_first_name") or proj_data.get("sales_first_name", "")
         tf_sales_last.value = proj_data.get("sales_rep_last_name") or proj_data.get("sales_last_name", "")
         tf_sales_email.value = proj_data.get("sales_rep_email") or proj_data.get("sales_email", "")
         tf_sales_phone.value = proj_data.get("sales_rep_phone") or proj_data.get("sales_phone", "")
         dd_team_code.value = proj_data.get("team_code") or proj_data.get("sales_team", None)
 
-        # 2. Job & Site Details Pre-Fill
         tf_job_num.value = proj_data.get("tbc_job_number", "")
         tf_proj_name.value = proj_data.get("project_name", "")
         tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("contractor_name") or proj_data.get("company_name", "")
         tf_site_name.value = proj_data.get("site_name", "")
 
-        # 3. Address Details Pre-Fill
         tf_street_1.value = proj_data.get("street_address_1", "")
         tf_street_2.value = proj_data.get("street_address_2", "")
         tf_city.value = proj_data.get("city", "")
@@ -459,7 +485,6 @@ def build_service_intake_form(
         tf_postal.value = proj_data.get("postal_code", "")
         tf_country.value = proj_data.get("country", "US")
 
-        # 4. Project Site Contact Pre-Fill
         tf_contact_first.value = proj_data.get("project_site_contact_first_name") or proj_data.get("pm_first_name", "")
         tf_contact_last.value = proj_data.get("project_site_contact_last_name") or proj_data.get("pm_last_name", "")
         tf_contact_email.value = proj_data.get("project_site_contact_email") or proj_data.get("pm_email", "")
@@ -537,7 +562,6 @@ def build_service_intake_form(
             "submission_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
         }
 
-        # 1. Save to Local SQLite Database ('intake_requests' & optional 'dispatches')
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -563,7 +587,6 @@ def build_service_intake_form(
         except Exception as sql_err:
             logging.error(f"SQLite intake insert error: {sql_err}")
 
-        # 2. Sync to Cloud Firestore ('intake_ledger')
         if firestore_db is not None:
             try:
                 firestore_db.collection("intake_ledger").document(req_id).set(intake_payload, merge=True)
@@ -590,7 +613,7 @@ def build_service_intake_form(
             tf_issue,
             ft.Row([dd_technician, tf_scheduled_time], spacing=10),
             ft.Row([
-                ft.OutlinedButton("📄 Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True)),
+                ft.OutlinedButton("Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True)),
                 docs_status_txt
             ], spacing=10),
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),

@@ -10,23 +10,16 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 
-# Import credential manager and live database instances from db_manager
 from src.backend.db_manager import cred_manager, local_db, db as firestore_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Designated Admin Email address granted Editor (writer) rights on created folders
 ADMIN_EMAIL = "service@tbcotampaservice.com"
-
-# Target Google Shared Drive Parent Folder ID
 SHARED_DRIVE_PARENT_ID = os.getenv("SHARED_DRIVE_PARENT_ID", "0AFT7nUPO-vWvUk9PVA")
 
 
 def get_drive_service():
-    """
-    Authenticates with Google Drive API using service account credentials stored in memory vault.
-    Disables cache_discovery to eliminate harmless file_cache warning logs.
-    """
+    """Authenticates with Google Drive API using service account credentials."""
     try:
         raw_creds = cred_manager.get_credential("Firebase", "master_service_account")
         if not raw_creds:
@@ -44,11 +37,7 @@ def get_drive_service():
 
 
 def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str, str]:
-    """
-    Creates a Parent Google Drive folder titled '123456XX - Project Name' inside the Shared Drive,
-    grants Admin Editor access to service@tbcotampaservice.com, and automatically 
-    creates a child 'registration' subfolder inside it.
-    """
+    """Creates a project folder in the Shared Drive with fault-tolerant permission handling."""
     service = get_drive_service()
     folder_title = f"{job_number} - {project_name}"
     
@@ -61,7 +50,7 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
         }
 
     try:
-        # 1. Create Parent Project Folder inside Target Shared Drive
+        # 1. Create Parent Project Folder in Target Shared Drive
         parent_metadata = {
             'name': folder_title,
             'mimeType': 'application/vnd.google-apps.folder',
@@ -76,30 +65,36 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
         parent_id = parent_folder.get('id')
         web_link = parent_folder.get('webViewLink')
 
-        # 2a. Grant Read Permissions on Parent Folder for Link Holders
-        user_permission = {'type': 'anyone', 'role': 'reader'}
-        service.permissions().create(
-            fileId=parent_id,
-            body=user_permission,
-            fields='id',
-            supportsAllDrives=True
-        ).execute()
+        # 2a. Safely attempt link permissions (catch domain policy blocks)
+        try:
+            user_permission = {'type': 'anyone', 'role': 'reader'}
+            service.permissions().create(
+                fileId=parent_id,
+                body=user_permission,
+                fields='id',
+                supportsAllDrives=True
+            ).execute()
+        except Exception as perm_err:
+            logging.warning(f"Note: Public reader permission skipped due to domain policy: {perm_err}")
 
-        # 2b. Grant Editor (writer) Control to Admin Email silently
-        admin_permission = {
-            'type': 'user',
-            'role': 'writer',
-            'emailAddress': ADMIN_EMAIL
-        }
-        service.permissions().create(
-            fileId=parent_id,
-            body=admin_permission,
-            fields='id',
-            sendNotificationEmail=False,
-            supportsAllDrives=True
-        ).execute()
+        # 2b. Safely attempt Admin Editor permissions
+        try:
+            admin_permission = {
+                'type': 'user',
+                'role': 'writer',
+                'emailAddress': ADMIN_EMAIL
+            }
+            service.permissions().create(
+                fileId=parent_id,
+                body=admin_permission,
+                fields='id',
+                sendNotificationEmail=False,
+                supportsAllDrives=True
+            ).execute()
+        except Exception as admin_err:
+            logging.warning(f"Note: Admin writer permission skipped: {admin_err}")
 
-        # 3. Create Nested 'registration' Child Subfolder Inside Parent Folder
+        # 3. Create Child 'registration' Subfolder
         reg_metadata = {
             'name': 'registration',
             'mimeType': 'application/vnd.google-apps.folder',
@@ -113,8 +108,6 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
         reg_id = reg_folder.get('id')
 
         logging.info(f"Created Parent Project Folder in Shared Drive: '{folder_title}' (ID: {parent_id})")
-        logging.info(f"Granted Editor control to: {ADMIN_EMAIL}")
-        logging.info(f"Created Child Subfolder: 'registration' (ID: {reg_id})")
 
         return {
             "drive_id": parent_id,
@@ -132,9 +125,7 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
 
 
 def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[str]:
-    """
-    Uploads a list of local files into the specified Google Drive folder.
-    """
+    """Uploads local files into the specified Google Drive folder."""
     service = get_drive_service()
     uploaded_file_ids = []
 
@@ -146,10 +137,7 @@ def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[
         if os.path.exists(path) and os.path.isfile(path):
             try:
                 filename = os.path.basename(path)
-                file_metadata = {
-                    'name': filename,
-                    'parents': [folder_id]
-                }
+                file_metadata = {'name': filename, 'parents': [folder_id]}
                 media = MediaFileUpload(path, resumable=True)
                 uploaded_file = service.files().create(
                     body=file_metadata,
@@ -173,11 +161,9 @@ def send_receipt_email_with_drive_link(
     project_name: str,
     drive_url: str
 ) -> bool:
-    """
-    Sends a service request receipt email to the requestor containing the Drive folder link.
-    """
+    """Sends a confirmation email containing the Drive folder link."""
     if not requestor_email or "@" not in requestor_email:
-        logging.warning("Invalid or missing requestor email. Skipping confirmation email.")
+        logging.warning("Invalid requestor email. Skipping email dispatch.")
         return False
 
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -186,15 +172,12 @@ def send_receipt_email_with_drive_link(
     smtp_pass = os.getenv("SMTP_PASS")
 
     subject = f"Service Request Receipt - Job #{job_number} ({project_name})"
-    
     email_body = f"""Hello {requestor_name or 'Valued Client'},
 
-Thank you for submitting your service request. Your request has been logged under Job #{job_number}.
+Thank you for submitting your service request for Job #{job_number}.
 
-A dedicated Google Drive project folder has been provisioned for your request. You can access and view all uploaded service documents using the link below:
-
-📂 Access Your Project Folder:
-{drive_url}
+Your Google Drive project folder link is ready below:
+📂 {drive_url}
 
 Best regards,
 FieldFlow Service Team
@@ -208,10 +191,8 @@ Tom Barrow Company
     msg.attach(MIMEText(email_body, 'plain'))
 
     if not smtp_user or not smtp_pass:
-        logging.warning("SMTP Credentials missing. Displaying compiled email output:\n")
+        logging.warning("SMTP credentials unconfigured. Displaying email preview:\n")
         print("=" * 60)
-        print(f"TO: {requestor_email}")
-        print(f"SUBJECT: {subject}")
         print(email_body)
         print("=" * 60)
         return True
@@ -222,7 +203,7 @@ Tom Barrow Company
         server.login(smtp_user, smtp_pass)
         server.sendmail(msg['From'], [requestor_email], msg.as_string())
         server.quit()
-        logging.info(f"Confirmation email dispatched to {requestor_email}.")
+        logging.info(f"Confirmation email sent to {requestor_email}.")
         return True
     except Exception as e:
         logging.error(f"Failed to send confirmation email: {e}")
@@ -236,12 +217,7 @@ def process_new_service_request_submittal(
     requestor_email: str,
     attached_file_paths: Optional[List[str]] = None
 ) -> Dict[str, str]:
-    """
-    Master pipeline wrapper function:
-    1. Creates Google Drive folder ('123456XX - Project Name')
-    2. Uploads staged submittal files
-    3. Emails requestor with folder link
-    """
+    """Master pipeline wrapper: creates folder, uploads files, and emails receipt."""
     drive_info = create_project_drive_folder(job_number, project_name)
     drive_id = drive_info["drive_id"]
     drive_url = drive_info["drive_url"]
@@ -267,16 +243,10 @@ def ensure_project_drive_folder(
     requestor_email: str = "",
     attached_file_paths: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """
-    Smart Check-and-Reuse Folder Pipeline:
-    1. Queries local SQLite for an existing project folder matching Job #.
-    2. If found, links directly to the existing folder and uploads new submittals.
-    3. If missing, provisions a new Google Drive folder and registers it in database records.
-    """
+    """Check-and-Reuse Drive folder pipeline."""
     clean_job_num = job_number.strip().upper()
     existing_drive_id = None
 
-    # Step 1: Query local SQLite database for an existing project record
     try:
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
@@ -285,34 +255,20 @@ def ensure_project_drive_folder(
             if row and row["drive_id"] and not str(row["drive_id"]).startswith("FLD-"):
                 existing_drive_id = row["drive_id"]
     except Exception as e:
-        logging.error(f"Error querying local database for Job #{clean_job_num}: {e}")
+        logging.error(f"Error querying database for Job #{clean_job_num}: {e}")
 
-    # PATH A: Existing project folder found — REUSE
     if existing_drive_id:
-        logging.info(f"Existing Drive folder found for Job #{clean_job_num} ({existing_drive_id}). Linking request.")
-        
+        logging.info(f"Reusing Drive folder for Job #{clean_job_num} ({existing_drive_id}).")
         if attached_file_paths:
             upload_files_to_drive_folder(existing_drive_id, attached_file_paths)
 
         existing_drive_url = f"https://drive.google.com/drive/folders/{existing_drive_id}"
-
         if requestor_email:
-            send_receipt_email_with_drive_link(
-                requestor_email=requestor_email,
-                requestor_name=requestor_name,
-                job_number=clean_job_num,
-                project_name=project_name,
-                drive_url=existing_drive_url
-            )
+            send_receipt_email_with_drive_link(requestor_email, requestor_name, clean_job_num, project_name, existing_drive_url)
 
-        return {
-            "drive_id": existing_drive_id,
-            "drive_url": existing_drive_url,
-            "is_new_folder": False
-        }
+        return {"drive_id": existing_drive_id, "drive_url": existing_drive_url, "is_new_folder": False}
 
-    # PATH B: No existing project folder found — CREATE NEW
-    logging.info(f"No existing folder found for Job #{clean_job_num}. Provisioning new Google Drive folder...")
+    logging.info(f"Provisioning new Shared Drive folder for Job #{clean_job_num}...")
     drive_info = process_new_service_request_submittal(
         job_number=clean_job_num,
         project_name=project_name,
@@ -323,7 +279,6 @@ def ensure_project_drive_folder(
 
     new_drive_id = drive_info.get("drive_id")
 
-    # Register project row in local SQLite database
     try:
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
@@ -333,9 +288,8 @@ def ensure_project_drive_folder(
             """, (clean_job_num, project_name, new_drive_id))
             conn.commit()
     except Exception as e:
-        logging.error(f"Failed to register project in local SQLite: {e}")
+        logging.error(f"Failed to register project in local database: {e}")
 
-    # Sync project row to Cloud Firestore
     if firestore_db is not None:
         try:
             firestore_db.collection("projects").document(clean_job_num).set({
@@ -352,13 +306,10 @@ def ensure_project_drive_folder(
 
 
 def list_files_in_drive_folder(folder_id: str) -> List[Dict[str, str]]:
-    """
-    Retrieves all active files inside a specific Google Drive folder.
-    Returns a list of dicts containing 'name' and 'webViewLink'.
-    """
+    """Lists active files in a specified Google Drive folder."""
     service = get_drive_service()
     if not service or not folder_id or folder_id.startswith("FLD-"):
-        logging.warning(f"Drive service or folder ID '{folder_id}' invalid. Skipping file list retrieval.")
+        logging.warning(f"Drive service or folder ID '{folder_id}' invalid. Skipping.")
         return []
 
     try:
