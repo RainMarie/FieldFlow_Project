@@ -74,7 +74,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_contact_email = ft.TextField(label="Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_phone = ft.TextField(label="Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 4. Sales Rep Controls (Re-ordered: Email First + On Blur Handler)
+    # 4. Sales Rep Controls
     sales_instructions_note = ft.Text(
         "Enter Sales Rep Email first to auto-fill details from Cloud Firestore, or type new details below to register a sales user.",
         size=11,
@@ -93,7 +93,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
         user_found = False
 
-        # Step A: Primary Lookup in Cloud Firestore
         if firestore_db is not None:
             try:
                 doc = firestore_db.collection("users").document(clean_email).get()
@@ -107,7 +106,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             except Exception as err:
                 logging.warning(f"Cloud sales user lookup error: {err}")
 
-        # Step B: Offline Fallback Lookup in Local SQLite
         if not user_found:
             try:
                 with local_db.get_connection() as conn:
@@ -233,16 +231,15 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         clean_site = resolve_location(s_name, street_1, street_2, city_val, state_val, zip_val, country_val)
         clean_acct = resolve_contractor(acct_no, company)
 
-        # Auto-register sales user with role='Sales' in users table
         sales_email_val = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
         if sales_email_val:
             resolve_sales_user(
                 user_email=sales_email_val,
                 first_name=tf_sales_first.value.strip() if tf_sales_first.value else "",
-                last_name=tf_sales_last.value.strip() if tf_sales_last.value else ""
+                last_name=tf_sales_last.value.strip() if tf_sales_last.value else "",
+                user_phone=tf_sales_phone.value.strip() if tf_sales_phone.value else ""
             )
 
-        # Automatically Provision Google Drive Folder inside Shared Drive
         drive_info = ensure_project_drive_folder(
             job_number=job_num,
             project_name=p_name,
@@ -252,7 +249,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         )
         drive_id = drive_info.get("drive_id", f"FLD-GDRV-{job_num}")
 
-        # Complete Payload for Cloud Storage
         proj_payload = {
             "tbc_job_number": job_num,
             "site_name": clean_site,
@@ -270,8 +266,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "project_site_contact_last_name": tf_contact_last.value.strip() if tf_contact_last.value else "",
             "project_site_contact_email": tf_contact_email.value.strip().lower() if tf_contact_email.value else "",
             "project_site_contact_phone": tf_contact_phone.value.strip() if tf_contact_phone.value else "",
-            "sales_rep_first_name": tf_sales_first.value.strip() if tf_sales_first.value else "",
-            "sales_rep_last_name": tf_sales_last.value.strip() if tf_sales_last.value else "",
             "sales_rep_email": sales_email_val,
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "team_code": dd_team_code.value if dd_team_code.value else "",
@@ -279,7 +273,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "stage": "In Progress"
         }
 
-        # SQLite Insert matching STRICT 6-column schema
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -294,7 +287,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         except Exception as sql_err:
             logging.error(f"SQLite project insert error: {sql_err}")
 
-        # Sync complete payload to Cloud Firestore
         if firestore_db is not None:
             try:
                 firestore_db.collection("projects").document(job_num).set(proj_payload, merge=True)
@@ -534,15 +526,16 @@ def build_service_intake_form(
         if not isinstance(proj_data, dict):
             return
 
-        tf_sales_first.value = proj_data.get("sales_rep_first_name") or proj_data.get("sales_first_name", "")
-        tf_sales_last.value = proj_data.get("sales_rep_last_name") or proj_data.get("sales_last_name", "")
-        tf_sales_email.value = proj_data.get("sales_rep_email") or proj_data.get("sales_email", "")
-        tf_sales_phone.value = proj_data.get("sales_rep_phone") or proj_data.get("sales_phone", "")
-        dd_team_code.value = proj_data.get("team_code") or proj_data.get("sales_team", None)
+        sales_email_val = proj_data.get("sales_rep_email") or ""
+        tf_sales_email.value = sales_email_val
+        tf_sales_first.value = proj_data.get("sales_rep_first_name") or ""
+        tf_sales_last.value = proj_data.get("sales_rep_last_name") or ""
+        tf_sales_phone.value = proj_data.get("sales_rep_phone") or ""
+        dd_team_code.value = proj_data.get("team_code") or None
 
         tf_job_num.value = proj_data.get("tbc_job_number", "")
         tf_proj_name.value = proj_data.get("project_name", "")
-        tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("contractor_name") or proj_data.get("company_name", "")
+        tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("company_name", "")
         tf_site_name.value = proj_data.get("site_name", "")
 
         tf_street_1.value = proj_data.get("street_address_1", "")
@@ -552,10 +545,10 @@ def build_service_intake_form(
         tf_postal.value = proj_data.get("postal_code", "")
         tf_country.value = proj_data.get("country", "US")
 
-        tf_contact_first.value = proj_data.get("project_site_contact_first_name") or proj_data.get("pm_first_name", "")
-        tf_contact_last.value = proj_data.get("project_site_contact_last_name") or proj_data.get("pm_last_name", "")
-        tf_contact_email.value = proj_data.get("project_site_contact_email") or proj_data.get("pm_email", "")
-        tf_contact_phone.value = proj_data.get("project_site_contact_phone") or proj_data.get("pm_phone", "")
+        tf_contact_first.value = proj_data.get("project_site_contact_first_name") or ""
+        tf_contact_last.value = proj_data.get("project_site_contact_last_name") or ""
+        tf_contact_email.value = proj_data.get("project_site_contact_email") or ""
+        tf_contact_phone.value = proj_data.get("project_site_contact_phone") or ""
 
         if page:
             page.update()
@@ -599,6 +592,15 @@ def build_service_intake_form(
             show_toast(page, "Job #, Campus Name, Project Name, Street, City, and Sales Rep First Name are required!", kind="error")
             return
 
+        sales_email_val = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
+        if sales_email_val:
+            resolve_sales_user(
+                user_email=sales_email_val,
+                first_name=tf_sales_first.value.strip(),
+                last_name=tf_sales_last.value.strip(),
+                user_phone=tf_sales_phone.value.strip()
+            )
+
         req_id = f"REQ-{int(time.time())}"
         triage_val = "Dispatched" if (dd_technician.value and dd_technician.value.strip()) else "Unassigned"
         
@@ -615,9 +617,7 @@ def build_service_intake_form(
             "state": tf_state.value.strip(),
             "postal_code": tf_postal.value.strip() if tf_postal.value else "",
             "country": tf_country.value.strip() if tf_country.value else "US",
-            "sales_rep_first_name": tf_sales_first.value.strip(),
-            "sales_rep_last_name": tf_sales_last.value.strip() if tf_sales_last.value else "",
-            "sales_rep_email": tf_sales_email.value.strip().lower() if tf_sales_email.value else "",
+            "sales_rep_email": sales_email_val,
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "project_site_contact_first_name": tf_contact_first.value.strip() if tf_contact_first.value else "",
             "project_site_contact_last_name": tf_contact_last.value.strip() if tf_contact_last.value else "",
@@ -636,11 +636,11 @@ def build_service_intake_form(
                     INSERT INTO intake_requests (
                         request_id, tbc_job_number, team_code, site_name, project_name,
                         contractor_company_name, street_address_1, street_address_2, city, state,
-                        postal_code, country, sales_rep_first_name, sales_rep_last_name, sales_rep_email,
-                        sales_rep_phone, project_site_contact_first_name, project_site_contact_last_name,
+                        postal_code, country, sales_rep_email, sales_rep_phone,
+                        project_site_contact_first_name, project_site_contact_last_name,
                         project_site_contact_email, project_site_contact_phone, issue_description,
                         triage_status, request_type, submission_timestamp
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, tuple(intake_payload.values()))
 
                 if dd_technician.value and tf_scheduled_time.value:
@@ -648,7 +648,7 @@ def build_service_intake_form(
                     cursor.execute("""
                         INSERT INTO dispatches (job_id, tbc_job_number, technician_email, sales_rep_email, scheduled_time, status, job_type)
                         VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
-                    """, (job_id, intake_payload["tbc_job_number"], dd_technician.value, intake_payload["sales_rep_email"], tf_scheduled_time.value.strip(), intake_payload["request_type"]))
+                    """, (job_id, intake_payload["tbc_job_number"], dd_technician.value, sales_email_val, tf_scheduled_time.value.strip(), intake_payload["request_type"]))
 
                 conn.commit()
         except Exception as sql_err:
@@ -656,7 +656,7 @@ def build_service_intake_form(
 
         if firestore_db is not None:
             try:
-                firestore_db.collection("intake_ledger").document(req_id).set(intake_payload, merge=True)
+                firestore_db.collection("intake_requests").document(req_id).set(intake_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore intake sync error: {fs_err}")
 

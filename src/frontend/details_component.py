@@ -22,7 +22,8 @@ from src.backend.db_manager import (
     db as firestore_db,
     resolve_location,
     resolve_contractor,
-    resolve_pm_contact
+    resolve_pm_contact,
+    resolve_sales_user
 )
 from src.frontend.shared_utils import find_any_local_logo, get_base64_from_file, show_toast
 
@@ -34,7 +35,6 @@ VALID_TEAM_CODES = [
 
 
 def build_image_control(photo_url_or_path: str, height: int = 180) -> ft.Control:
-    """Renders network images, local disk images, or styled fallback brand containers."""
     val = (photo_url_or_path or "").strip()
     if val.startswith("http://") or val.startswith("https://"):
         return ft.Image(src=val, height=height, fit=ft.ImageFit.COVER, border_radius=6)
@@ -74,7 +74,6 @@ def build_project_detail_modal(
     on_save_callback=None,
     on_delete_callback=None
 ):
-    """Builds and manages the project detail modal dialog."""
     active_project_state = {"tbc_job_number": None, "drive_id": None}
 
     def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):
@@ -83,7 +82,6 @@ def build_project_detail_modal(
             padding=ft.padding.only(top=8, bottom=2)
         )
 
-    # 1. Project Core Vitals Fields
     edit_project_job_num = ft.TextField(label="TBCo Job #*", read_only=True, border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_project_name = ft.TextField(label="Project Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_stage = ft.Dropdown(
@@ -100,11 +98,9 @@ def build_project_detail_modal(
     )
     edit_drive_id = ft.TextField(label="Google Drive Folder ID", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 2. Contractor & Client Details Fields
     edit_company_name = ft.TextField(label="Contractor / Client Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_company_acct = ft.TextField(label="Company Account #", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 3. Site Location & Address Fields
     edit_site_name = ft.TextField(label="Campus / Site Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_street_1 = ft.TextField(label="Street Address 1*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_street_2 = ft.TextField(label="Street Address 2 / Unit", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
@@ -113,13 +109,11 @@ def build_project_detail_modal(
     edit_postal_code = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 4. Project Site Contact Details Fields
     edit_pm_first_name = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_pm_last_name = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_pm_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_pm_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 5. Media & File Staging Controls
     staged_photo_path = {"value": ""}
     staged_documents = []
 
@@ -174,16 +168,6 @@ def build_project_detail_modal(
             pm_ph = proj_data.get("pm_phone") or proj_data.get("phone", "")
             
             photo_val = proj_data.get("photo_url", "")
-        elif isinstance(proj_data, (tuple, list)):
-            job_num = proj_data[0] if len(proj_data) > 0 else ""
-            proj_name = proj_data[1] if len(proj_data) > 1 else ""
-            s_name = proj_data[2] if len(proj_data) > 2 else ""
-            client = proj_data[3] if len(proj_data) > 3 else ""
-            drive_val = proj_data[4] if len(proj_data) > 4 else ""
-            stage_val = proj_data[5] if len(proj_data) > 5 else "In Progress"
-            photo_val = proj_data[6] if len(proj_data) > 6 else ""
-            acct_num, st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "", "US"
-            pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
         else:
             return
 
@@ -220,7 +204,6 @@ def build_project_detail_modal(
 
     def save_project_detail_edits(e):
         if not edit_project_job_num.value or not edit_project_name.value or not edit_company_name.value or not edit_site_name.value or not edit_street_1.value or not edit_city.value or not edit_state.value:
-            # FIX: Use show_toast directly with page parameter
             show_toast(page, "Job #, Project Name, Contractor, Site Name, Street, City, and State are required!", kind="error")
             return
 
@@ -245,7 +228,6 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
-        # Step A: Resolve Normalized Relations
         clean_site = resolve_location(site_name, street_1, street_2, city_val, state_val, postal_val, country_val)
         clean_acct = resolve_contractor(company_acct, company_name)
         clean_pm_id = None
@@ -275,7 +257,6 @@ def build_project_detail_modal(
             "photo_url": staged_photo_path["value"]
         }
 
-        # Step B: SQLite Save Persistence
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -289,14 +270,12 @@ def build_project_detail_modal(
         except Exception as sql_err:
             logging.error(f"SQLite project update error: {sql_err}")
 
-        # Step C: Cloud Firestore Dual-Layer Persistence
         if firestore_db is not None:
             try:
                 firestore_db.collection("projects").document(job_num).set(updated_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore project update error: {fs_err}")
 
-        # FIX: Use show_toast directly with page parameter
         show_toast(page, f"🎉 Project #{job_num} Master Record Saved!", kind="success")
         project_detail_modal_dialog.open = False
         page.update()
@@ -353,7 +332,7 @@ def build_ticket_detail_modal(
     trigger_date_picker_fn,
     on_save_callback=None
 ):
-    """Editable Service Ticket Detail Modal using standardized dictionary key names."""
+    """Editable Service Ticket Detail Modal using normalized schema and sales user lookups."""
     active_ticket_state = {"request_id": None, "tbc_job_number": None}
 
     def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):
@@ -362,20 +341,17 @@ def build_ticket_detail_modal(
             padding=ft.padding.only(top=8, bottom=2)
         )
 
-    # 1. Sales Rep Details Fields
     dt_sales_first_name = ft.TextField(label="Sales Rep First Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_sales_last_name = ft.TextField(label="Sales Rep Last Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_sales_email = ft.TextField(label="Sales Rep Email*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_sales_phone = ft.TextField(label="Sales Rep Phone", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_team_code = ft.Dropdown(label="Team Code*", options=[ft.dropdown.Option(code) for code in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 2. Job & Site Details Fields
     dt_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_company_name = ft.TextField(label="Contractor / Client Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_site_name = ft.TextField(label="Campus / Site Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_project_name = ft.TextField(label="Project Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 3. Address Details Fields
     dt_street_1 = ft.TextField(label="Street Address 1*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_street_2 = ft.TextField(label="Street Address 2 / Unit", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_city = ft.TextField(label="City*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
@@ -383,7 +359,6 @@ def build_ticket_detail_modal(
     dt_postal_code = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 4. Service Description & Request Type
     dt_request_type = ft.Dropdown(
         label="Request Type*",
         options=[
@@ -396,13 +371,11 @@ def build_ticket_detail_modal(
     )
     dt_issue = ft.TextField(label="Issue Description*", multiline=True, min_lines=2, max_lines=4, border_color=FieldFlowLightTheme.BORDER_PINK_EDGE)
 
-    # 5. Site Contact Details Fields
     dt_contact_first_name = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_contact_last_name = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_contact_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_contact_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 6. Dispatch Status Controls
     dt_tech_select = ft.Dropdown(label="Assigned Tech Email", options=get_tech_options_fn(), border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_date_select = ft.TextField(label="Scheduled Date", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_status_select = ft.Dropdown(
@@ -417,15 +390,28 @@ def build_ticket_detail_modal(
     )
 
     def populate_ticket_data(req_data: dict, dispatch_data: dict = None):
-        """Populates modal fields using direct standardized dictionary keys."""
+        """Populates modal fields looking up sales user details directly from users table."""
         active_ticket_state["request_id"] = req_data.get("request_id")
         active_ticket_state["tbc_job_number"] = req_data.get("tbc_job_number") or ""
 
-        dt_sales_first_name.value = req_data.get("sales_rep_first_name") or ""
-        dt_sales_last_name.value = req_data.get("sales_rep_last_name") or ""
-        dt_sales_email.value = req_data.get("sales_rep_email") or ""
+        sales_email_val = req_data.get("sales_rep_email") or ""
+        dt_sales_email.value = sales_email_val
         dt_sales_phone.value = req_data.get("sales_rep_phone") or ""
         dt_team_code.value = req_data.get("team_code") or None
+
+        if sales_email_val:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT first_name, last_name, user_phone FROM users WHERE LOWER(user_email) = ?", (sales_email_val.lower(),))
+                    row = cursor.fetchone()
+                    if row:
+                        dt_sales_first_name.value = row["first_name"] or ""
+                        dt_sales_last_name.value = row["last_name"] or ""
+                        if not dt_sales_phone.value:
+                            dt_sales_phone.value = row["user_phone"] or ""
+            except Exception as err:
+                logging.warning(f"Error fetching sales rep details for modal: {err}")
 
         dt_job_num.value = req_data.get("tbc_job_number") or ""
         dt_company_name.value = req_data.get("contractor_company_name") or ""
@@ -454,13 +440,21 @@ def build_ticket_detail_modal(
             dt_date_select.value = dispatch_data.get("scheduled_time") or datetime.now().strftime("%Y-%m-%d")
 
     def save_ticket_detail_edits(e):
-        """Saves modal changes into SQLite and Firestore using standardized dictionary keys."""
         if not dt_job_num.value or not dt_site_name.value or not dt_street_1.value or not dt_city.value or not dt_state.value:
             show_toast(page, "Job #, Campus Name, Street, City, and State are required!", kind="error")
             return
 
         req_id = active_ticket_state["request_id"]
         job_num = dt_job_num.value.strip().upper()
+        sales_email = dt_sales_email.value.strip().lower() if dt_sales_email.value else ""
+
+        if sales_email:
+            resolve_sales_user(
+                user_email=sales_email,
+                first_name=dt_sales_first_name.value.strip() if dt_sales_first_name.value else "",
+                last_name=dt_sales_last_name.value.strip() if dt_sales_last_name.value else "",
+                user_phone=dt_sales_phone.value.strip() if dt_sales_phone.value else ""
+            )
 
         updated_payload = {
             "request_id": req_id,
@@ -475,9 +469,7 @@ def build_ticket_detail_modal(
             "state": dt_state.value.strip(),
             "postal_code": dt_postal_code.value.strip() if dt_postal_code.value else "",
             "country": dt_country.value.strip() if dt_country.value else "US",
-            "sales_rep_first_name": dt_sales_first_name.value.strip() if dt_sales_first_name.value else "",
-            "sales_rep_last_name": dt_sales_last_name.value.strip() if dt_sales_last_name.value else "",
-            "sales_rep_email": dt_sales_email.value.strip() if dt_sales_email.value else "",
+            "sales_rep_email": sales_email,
             "sales_rep_phone": dt_sales_phone.value.strip() if dt_sales_phone.value else "",
             "project_site_contact_first_name": dt_contact_first_name.value.strip() if dt_contact_first_name.value else "",
             "project_site_contact_last_name": dt_contact_last_name.value.strip() if dt_contact_last_name.value else "",
@@ -488,7 +480,6 @@ def build_ticket_detail_modal(
             "request_type": dt_request_type.value or "VFD Startup"
         }
 
-        # 1. Update SQLite 'intake_requests'
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -496,29 +487,28 @@ def build_ticket_detail_modal(
                     UPDATE intake_requests
                     SET tbc_job_number = ?, team_code = ?, site_name = ?, project_name = ?,
                         contractor_company_name = ?, street_address_1 = ?, street_address_2 = ?,
-                        city = ?, state = ?, postal_code = ?, country = ?, sales_rep_first_name = ?,
-                        sales_rep_last_name = ?, sales_rep_email = ?, sales_rep_phone = ?,
-                        project_site_contact_first_name = ?, project_site_contact_last_name = ?,
-                        project_site_contact_email = ?, project_site_contact_phone = ?,
-                        issue_description = ?, triage_status = ?, request_type = ?
+                        city = ?, state = ?, postal_code = ?, country = ?, sales_rep_email = ?,
+                        sales_rep_phone = ?, project_site_contact_first_name = ?,
+                        project_site_contact_last_name = ?, project_site_contact_email = ?,
+                        project_site_contact_phone = ?, issue_description = ?,
+                        triage_status = ?, request_type = ?
                     WHERE request_id = ?
                 """, (
                     job_num, updated_payload["team_code"], updated_payload["site_name"], updated_payload["project_name"],
                     updated_payload["contractor_company_name"], updated_payload["street_address_1"], updated_payload["street_address_2"],
                     updated_payload["city"], updated_payload["state"], updated_payload["postal_code"], updated_payload["country"],
-                    updated_payload["sales_rep_first_name"], updated_payload["sales_rep_last_name"], updated_payload["sales_rep_email"],
-                    updated_payload["sales_rep_phone"], updated_payload["project_site_contact_first_name"], updated_payload["project_site_contact_last_name"],
-                    updated_payload["project_site_contact_email"], updated_payload["project_site_contact_phone"], updated_payload["issue_description"],
+                    updated_payload["sales_rep_email"], updated_payload["sales_rep_phone"], updated_payload["project_site_contact_first_name"],
+                    updated_payload["project_site_contact_last_name"], updated_payload["project_site_contact_email"],
+                    updated_payload["project_site_contact_phone"], updated_payload["issue_description"],
                     updated_payload["triage_status"], updated_payload["request_type"], req_id
                 ))
                 conn.commit()
         except Exception as sql_err:
             logging.error(f"SQLite update error: {sql_err}")
 
-        # 2. Update Cloud Firestore 'intake_ledger'
         if firestore_db is not None:
             try:
-                firestore_db.collection("intake_ledger").document(req_id).set(updated_payload, merge=True)
+                firestore_db.collection("intake_requests").document(req_id).set(updated_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore update error: {fs_err}")
 
@@ -550,7 +540,7 @@ def build_ticket_detail_modal(
                 ft.Row([dt_city, dt_state, dt_postal_code, dt_country], spacing=8),
 
                 build_section_header("4. Service Description"),
-                ft.Row([dt_request_type]),  # WRAPPED IN ROW: Prevents vertical overlap
+                ft.Row([dt_request_type]),
                 dt_issue,
 
                 build_section_header("5. Project Site Contact"),
@@ -559,7 +549,7 @@ def build_ticket_detail_modal(
 
                 build_section_header("6. Dispatch Allocation", color_token=FieldFlowLightTheme.PRIMARY_GREEN),
                 ft.Row([dt_tech_select, dt_date_select], spacing=8),
-                ft.Row([dt_status_select])  # WRAPPED IN ROW: Prevents vertical overlap
+                ft.Row([dt_status_select])
             ], spacing=10, scroll=ft.ScrollMode.ALWAYS),
             width=760, height=580, padding=ft.padding.only(left=12, right=20, top=10, bottom=10)
         ),

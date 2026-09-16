@@ -1,9 +1,13 @@
+"""
+src/frontend/vfd_form_component.py
+Modular inspection wizard persisting to standardized assets and asset_inspections schemas.
+"""
+
 import flet as ft
 import time
 import os
 import sys
 
-# Dynamic path resolution to connect with local backend engines safely
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(CURRENT_DIR)
 ROOT_DIR = os.path.dirname(SRC_DIR)
@@ -21,13 +25,9 @@ def build_vfd_service_form(
     on_back_callback,
     show_toast_fn
 ) -> ft.Column:
-    """
-    Modular Component: Multi-Step Inspection Wizard
-    Supports both VFD Startup reports (3 steps) and General Service reports (2 steps).
-    """
     asset_serial = str(asset_data.get("serial_number", "SN-UNKNOWN"))
     asset_id = str(asset_data.get("asset_id") or f"AST-{asset_serial}")
-    asset_name = str(asset_data.get("asset_name", "Site Asset"))
+    asset_name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name", "Site Asset"))
     job_id = str(job_data.get("job_id", "JOB-UNKNOWN"))
     tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
     job_type = str(job_data.get("job_type", "VFD_STARTUP")).upper()
@@ -403,15 +403,16 @@ def build_vfd_service_form(
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO assets (asset_id, tbc_job_number, model_number, serial_number, equipment_tag)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (str(asset_id), str(tbc_job_num), "MOD-VFD", str(asset_serial), str(asset_name)))
+                    INSERT OR REPLACE INTO assets (asset_id, tbc_job_number, site_name, model_number, serial_number, equipment_tag)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (str(asset_id), str(tbc_job_num), str(tbc_job_num), "MOD-VFD", str(asset_serial), str(asset_name)))
                 conn.commit()
 
             if db is not None:
                 db.collection("assets").document(str(asset_id)).set({
                     "asset_id": str(asset_id),
                     "tbc_job_number": str(tbc_job_num),
+                    "site_name": str(tbc_job_num),
                     "model_number": "MOD-VFD",
                     "serial_number": str(asset_serial),
                     "equipment_tag": str(asset_name)
