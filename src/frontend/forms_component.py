@@ -1,7 +1,7 @@
 """
 src/frontend/forms_component.py
 Consolidated data entry and intake form module for FieldFlow using standardized key names,
-reordered search-first fields, auto-fill blur handlers, and thorough documentation.
+reordered search-first fields, auto-fill blur handlers, and Company Project Manager integration.
 """
 
 import os
@@ -22,7 +22,8 @@ from src.backend.db_manager import (
     db as firestore_db, 
     resolve_location, 
     resolve_contractor,
-    resolve_sales_user
+    resolve_sales_user,
+    resolve_pm_contact
 )
 from src.backend.drive_service import ensure_project_drive_folder
 from src.frontend.shared_utils import find_any_local_logo, show_toast
@@ -123,23 +124,16 @@ def on_contractor_blur_helper(tf_company: ft.TextField, tf_company_acct: ft.Text
 # =========================================================================
 
 def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:
-    """
-    Project Creation Form with search-first field ordering, auto-fill handlers,
-    and Company Project Manager contact integration linked to contractor accounts.
-    """
+    """Project Creation Form with search-first field ordering and Company PM integration."""
     
-    # ---------------------------------------------------------------------
     # 1. Core Project Controls
-    # ---------------------------------------------------------------------
     tf_job_num = ft.TextField(label="TBCo Job #*", hint_text="e.g. 287027TI", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_po_num = ft.TextField(label="PO #", hint_text="e.g. PO-88210", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # ---------------------------------------------------------------------
     # 2. Location & Address Controls
-    # ---------------------------------------------------------------------
     tf_street_1 = ft.TextField(label="Street Address 1*", hint_text="e.g. 500 Medical Way", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_street_2 = ft.TextField(label="Street Address 2 / Suite", hint_text="e.g. Suite 300", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_city = ft.TextField(label="City*", hint_text="e.g. Tampa", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -147,9 +141,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_postal_code = ft.TextField(label="Postal Code*", hint_text="e.g. 33602", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # ---------------------------------------------------------------------
-    # 3. Contractor Search Controls (Positioned FIRST in Contractor Section)
-    # ---------------------------------------------------------------------
+    # 3. Contractor Search Controls
     contractor_instructions_note = ft.Text(
         "Search existing contractor by Account # or Company Name to auto-fill contractor details below.",
         size=11,
@@ -171,17 +163,13 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
     )
 
-    # ---------------------------------------------------------------------
-    # 4. Company Project Manager Controls (Replaces Project Site Contact)
-    # ---------------------------------------------------------------------
+    # 4. Company Project Manager Controls
     tf_pm_first = ft.TextField(label="Company Project Manager First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_pm_last = ft.TextField(label="Company Project Manager Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_pm_email = ft.TextField(label="Company Project Manager Email", hint_text="e.g. asmith@acme.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_pm_phone = ft.TextField(label="Company Project Manager Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # ---------------------------------------------------------------------
-    # 5. Sales Rep Search Controls (Positioned FIRST in Sales Section)
-    # ---------------------------------------------------------------------
+    # 5. Sales Rep Search Controls
     sales_instructions_note = ft.Text(
         "Enter Sales Rep Email first to auto-fill details from database, or type new details below.",
         size=11,
@@ -242,9 +230,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         on_blur=on_sales_email_blur
     )
 
-    # ---------------------------------------------------------------------
     # 6. File Upload Controls & Status
-    # ---------------------------------------------------------------------
     staged_photo_path = {"value": ""}
     staged_documents = []
 
@@ -347,7 +333,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
         clean_pm_id = None
         if pm_email:
-            from src.backend.db_manager import resolve_pm_contact
             clean_pm_id = resolve_pm_contact(
                 tbco_account_number=clean_acct,
                 first_name=pm_first,
@@ -425,9 +410,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         if on_success_callback:
             on_success_callback(proj_payload)
 
-    # ---------------------------------------------------------------------
     # Form UI Layout Assembly
-    # ---------------------------------------------------------------------
     form_container = ft.Container(
         content=ft.Column([
             ft.Row([tf_job_num, tf_proj_name], spacing=10),
@@ -440,7 +423,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             contractor_instructions_note,
             ft.Row([tf_company, tf_company_acct], spacing=10),
             
-            # Company Project Manager Section (Replaces Site Contact)
+            # Company PM Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([tf_pm_first, tf_pm_last], spacing=10),
             ft.Row([tf_pm_email, tf_pm_phone], spacing=10),
@@ -608,11 +591,9 @@ def build_service_intake_form(
     on_success_callback=None,
     get_tech_options_fn=None
 ) -> ft.Control:
-    """Service Ticket Intake Form with search-first field ordering and auto-fill handlers."""
+    """Service Ticket Intake Form with search-first field ordering and Company PM integration."""
     
-    # ---------------------------------------------------------------------
-    # 1. Sales Rep Search Controls (Positioned FIRST in Sales Section)
-    # ---------------------------------------------------------------------
+    # 1. Sales Rep Search Controls
     sales_instructions_note = ft.Text(
         "Enter Sales Rep Email first to auto-fill details from database, or type new details below.",
         size=11,
@@ -672,9 +653,7 @@ def build_service_intake_form(
         on_blur=on_sales_email_blur
     )
 
-    # ---------------------------------------------------------------------
-    # 2. Contractor Search Controls (Positioned FIRST in Contractor Section)
-    # ---------------------------------------------------------------------
+    # 2. Contractor Search Controls
     contractor_instructions_note = ft.Text(
         "Search existing contractor by Account # or Company Name to auto-fill contractor details below.",
         size=11,
@@ -696,9 +675,13 @@ def build_service_intake_form(
         on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
     )
 
-    # ---------------------------------------------------------------------
-    # 3. Job & Location Controls
-    # ---------------------------------------------------------------------
+    # 3. Company Project Manager Controls
+    tf_pm_first = ft.TextField(label="Company Project Manager First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_last = ft.TextField(label="Company Project Manager Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_email = ft.TextField(label="Company Project Manager Email", hint_text="e.g. asmith@acme.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_phone = ft.TextField(label="Company Project Manager Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+
+    # 4. Job & Location Controls
     tf_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -710,17 +693,13 @@ def build_service_intake_form(
     tf_postal = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # ---------------------------------------------------------------------
-    # 4. Project Site Contact Controls
-    # ---------------------------------------------------------------------
+    # 5. Project Site Contact Controls
     tf_contact_first = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_last = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # ---------------------------------------------------------------------
-    # 5. Service Request & Dispatch Controls
-    # ---------------------------------------------------------------------
+    # 6. Service Request & Dispatch Controls
     dd_request_type = ft.Dropdown(
         label="Request Type*",
         options=[
@@ -773,6 +752,11 @@ def build_service_intake_form(
         tf_company_acct.value = proj_data.get("tbco_account_number") or ""
         tf_site_name.value = proj_data.get("site_name", "")
 
+        tf_pm_first.value = proj_data.get("pm_first_name") or ""
+        tf_pm_last.value = proj_data.get("pm_last_name") or ""
+        tf_pm_email.value = proj_data.get("pm_email") or ""
+        tf_pm_phone.value = proj_data.get("pm_phone") or ""
+
         tf_street_1.value = proj_data.get("street_address_1", "")
         tf_street_2.value = proj_data.get("street_address_2", "")
         tf_city.value = proj_data.get("city", "")
@@ -800,6 +784,11 @@ def build_service_intake_form(
         tf_company_acct.value = ""
         tf_site_name.value = ""
         tf_proj_name.value = ""
+
+        tf_pm_first.value = ""
+        tf_pm_last.value = ""
+        tf_pm_email.value = ""
+        tf_pm_phone.value = ""
 
         tf_street_1.value = ""
         tf_street_2.value = ""
@@ -837,9 +826,22 @@ def build_service_intake_form(
                 user_phone=tf_sales_phone.value.strip()
             )
 
+        acct_val = None
         if tf_company.value:
             acct_val = tf_company_acct.value.strip().upper() if tf_company_acct.value else f"CON-{tf_job_num.value.strip().upper()[:4]}"
             resolve_contractor(acct_val, tf_company.value.strip())
+
+        pm_email_val = tf_pm_email.value.strip().lower() if tf_pm_email.value else ""
+        clean_pm_id = None
+        if pm_email_val and acct_val:
+            clean_pm_id = resolve_pm_contact(
+                tbco_account_number=acct_val,
+                first_name=tf_pm_first.value.strip() if tf_pm_first.value else "",
+                last_name=tf_pm_last.value.strip() if tf_pm_last.value else "",
+                email=pm_email_val,
+                phone=tf_pm_phone.value.strip() if tf_pm_phone.value else "",
+                title="Project Manager"
+            )
 
         req_id = f"REQ-{int(time.time())}"
         triage_val = "Dispatched" if (dd_technician.value and dd_technician.value.strip()) else "Unassigned"
@@ -851,6 +853,12 @@ def build_service_intake_form(
             "site_name": tf_site_name.value.strip(),
             "project_name": tf_proj_name.value.strip(),
             "contractor_company_name": tf_company.value.strip(),
+            "tbco_account_number": acct_val or "",
+            "pm_contact_id": clean_pm_id,
+            "pm_first_name": tf_pm_first.value.strip() if tf_pm_first.value else "",
+            "pm_last_name": tf_pm_last.value.strip() if tf_pm_last.value else "",
+            "pm_email": pm_email_val,
+            "pm_phone": tf_pm_phone.value.strip() if tf_pm_phone.value else "",
             "street_address_1": tf_street_1.value.strip(),
             "street_address_2": tf_street_2.value.strip() if tf_street_2.value else "",
             "city": tf_city.value.strip(),
@@ -881,7 +889,17 @@ def build_service_intake_form(
                         project_site_contact_email, project_site_contact_phone, issue_description,
                         triage_status, request_type, submission_timestamp
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, tuple(intake_payload.values()))
+                """, (
+                    intake_payload["request_id"], intake_payload["tbc_job_number"], intake_payload["team_code"],
+                    intake_payload["site_name"], intake_payload["project_name"], intake_payload["contractor_company_name"],
+                    intake_payload["street_address_1"], intake_payload["street_address_2"], intake_payload["city"],
+                    intake_payload["state"], intake_payload["postal_code"], intake_payload["country"],
+                    intake_payload["sales_rep_email"], intake_payload["sales_rep_phone"],
+                    intake_payload["project_site_contact_first_name"], intake_payload["project_site_contact_last_name"],
+                    intake_payload["project_site_contact_email"], intake_payload["project_site_contact_phone"],
+                    intake_payload["issue_description"], intake_payload["triage_status"], intake_payload["request_type"],
+                    intake_payload["submission_timestamp"]
+                ))
 
                 if dd_technician.value and tf_scheduled_time.value:
                     job_id = f"JOB-{int(time.time())}"
@@ -906,21 +924,24 @@ def build_service_intake_form(
         if on_success_callback:
             on_success_callback(intake_payload)
 
-    # ---------------------------------------------------------------------
-    # Form UI Layout Assembly (Search Fields Positioned First)
-    # ---------------------------------------------------------------------
+    # Form UI Layout Assembly
     form_container = ft.Container(
         content=ft.Column([
-            # Sales Rep Section: Search Field FIRST
+            # Sales Rep Section
             sales_instructions_note,
             ft.Row([tf_sales_email], spacing=10),
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
             ft.Row([tf_sales_phone, dd_team_code], spacing=10),
             
-            # Contractor Section: Search Fields FIRST
+            # Contractor Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             contractor_instructions_note,
             ft.Row([tf_company, tf_company_acct], spacing=10),
+            
+            # Company Project Manager Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            ft.Row([tf_pm_first, tf_pm_last], spacing=10),
+            ft.Row([tf_pm_email, tf_pm_phone], spacing=10),
             
             # Job & Location Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
@@ -928,7 +949,7 @@ def build_service_intake_form(
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal, tf_country], spacing=8),
             
-            # Contact Section
+            # Site Contact Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([tf_contact_first, tf_contact_last], spacing=10),
             ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
