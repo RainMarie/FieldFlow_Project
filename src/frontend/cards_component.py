@@ -1,7 +1,7 @@
 """
 src/frontend/cards_component.py
 Consolidated card rendering module for FieldFlow using standardized key names,
-project photo rendering, and uniform FieldFlowLightTheme styling.
+project photo rendering, Company Project Manager integration, and uniform FieldFlowLightTheme styling.
 """
 
 import os
@@ -141,7 +141,7 @@ def build_project_card(
 ) -> ft.Card:
     """
     Renders a project card container for Projects Registry in Grid or List mode.
-    Directly consumes canonical keys without fallback chains.
+    Directly consumes canonical keys for Contractor, Company PM, and Sales Rep.
     """
     if isinstance(project_data, dict):
         job_num = project_data.get("tbc_job_number", "123456XX")
@@ -153,34 +153,44 @@ def build_project_card(
         address = f"{st1}, {c_city}, {c_state}".strip(", ") if st1 else project_data.get("site_name", "Pending Address")
 
         client = project_data.get("contractor_company_name", "Partner")
+        acct_no = project_data.get("tbco_account_number", "N/A")
         site_name = project_data.get("site_name", name)
         drive_id = project_data.get("drive_id", f"FLD-DRIVE-{job_num}")
         photo_url = project_data.get("photo_url", "")
 
-        cnt_f = project_data.get("project_site_contact_first_name", "")
-        cnt_l = project_data.get("project_site_contact_last_name", "")
-        cnt_em = project_data.get("project_site_contact_email", "")
-        cnt_ph = project_data.get("project_site_contact_phone", "")
+        pm_f = project_data.get("pm_first_name", "")
+        pm_l = project_data.get("pm_last_name", "")
+        pm_em = project_data.get("pm_email", "")
+        pm_ph = project_data.get("pm_phone", "")
+
+        sales_em = project_data.get("sales_rep_email", "")
+        sales_ph = project_data.get("sales_rep_phone", "")
+        team_code = project_data.get("team_code", "")
     else:
-        job_num, name, address, client, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "FLD-0", ""
+        job_num, name, address, client, acct_no, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "N/A", "FLD-0", ""
         st1, c_city, c_state = "", "", ""
         site_name = name
-        cnt_f, cnt_l, cnt_em, cnt_ph = "", "", "", ""
+        pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
+        sales_em, sales_ph, team_code = "", "", ""
+
+    pm_full_name = f"{pm_f} {pm_l}".strip() or "Unassigned PM"
 
     prefill_payload = {
         "tbc_job_number": job_num,
         "project_name": name,
         "contractor_company_name": client,
+        "tbco_account_number": acct_no,
         "site_name": site_name,
         "street_address_1": st1,
         "city": c_city,
         "state": c_state,
-        "project_site_contact_first_name": cnt_f,
-        "project_site_contact_last_name": cnt_l,
-        "project_site_contact_email": cnt_em,
-        "project_site_contact_phone": cnt_ph,
-        "sales_rep_email": project_data.get("sales_rep_email", "") if isinstance(project_data, dict) else "",
-        "team_code": project_data.get("team_code", "") if isinstance(project_data, dict) else "",
+        "pm_first_name": pm_f,
+        "pm_last_name": pm_l,
+        "pm_email": pm_em,
+        "pm_phone": pm_ph,
+        "sales_rep_email": sales_em,
+        "sales_rep_phone": sales_ph,
+        "team_code": team_code,
         "drive_id": drive_id,
         "photo_url": photo_url
     }
@@ -213,11 +223,31 @@ def build_project_card(
                         ft.Row(
                             [
                                 ft.Text(f"Job #{job_num}", size=16, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
+                                ft.Container(
+                                    content=ft.Text(f"Acct: {acct_no}", size=10, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE),
+                                    bgcolor=FieldFlowLightTheme.BG_BLUE_TINT,
+                                    padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                                    border_radius=4
+                                )
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN
                         ),
                         ft.Text(client, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=14),
                         ft.Text(f"{name} ({address})", size=12, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True),
+                        ft.Row(
+                            [
+                                ft.Icon(ft.icons.PERSON_OUTLINE, size=14, color=FieldFlowLightTheme.ACCENT_BLUE),
+                                build_truncating_text(f"PM: {pm_full_name}" + (f" ({pm_em})" if pm_em else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
+                            ],
+                            spacing=4
+                        ),
+                        ft.Row(
+                            [
+                                ft.Icon(ft.icons.BADGE_OUTLINED, size=14, color=FieldFlowLightTheme.PINK_PRIMARY),
+                                build_truncating_text(f"Sales: {sales_em or 'N/A'}" + (f" [{team_code}]" if team_code else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
+                            ],
+                            spacing=4
+                        ),
                         ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
                         ft.Row(
                             [
@@ -276,7 +306,7 @@ def build_project_card(
                                     ],
                                     spacing=10
                                 ),
-                                ft.Text(f"Client: {client}   |   {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True)
+                                ft.Text(f"Client: {client} ({acct_no})   |   PM: {pm_full_name} ({pm_em or 'N/A'})   |   {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True)
                             ],
                             spacing=2,
                             expand=True
@@ -351,7 +381,6 @@ def build_standard_ticket_card(
     status = record_data.get("triage_status", record_data.get("status", "Unassigned"))
     req_id = record_data.get("request_id", "REQ-NEW")
 
-    # Read salesperson details retrieved from joined users table query
     sales_f = str(record_data.get("sales_first_name") or "").strip()
     sales_l = str(record_data.get("sales_last_name") or "").strip()
     sales_email = record_data.get("sales_rep_email", "")
@@ -363,7 +392,6 @@ def build_standard_ticket_card(
     else:
         sales_full_name = "Unassigned Sales Rep"
 
-    # Read site contact details
     cnt_f = str(record_data.get("project_site_contact_first_name") or "").strip()
     cnt_l = str(record_data.get("project_site_contact_last_name") or "").strip()
     cnt_phone = record_data.get("project_site_contact_phone", "N/A")
