@@ -65,7 +65,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_postal_code = ft.TextField(label="Postal Code*", hint_text="e.g. 33602", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    tf_company = ft.TextField(label="Contractor Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_company = ft.TextField(label="Contractor Company Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_company_acct = ft.TextField(label="Contractor Account #", hint_text="e.g. ACME-0091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     # 3. Project Site Contact Controls
@@ -254,7 +254,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "site_name": clean_site,
             "tbco_account_number": clean_acct,
             "project_name": p_name,
-            "contractor_name": company,
             "contractor_company_name": company,
             "street_address_1": street_1,
             "street_address_2": street_2,
