@@ -66,13 +66,13 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     tf_company = ft.TextField(label="Contractor Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_company_acct = ft.TextField(label="Company Account #", hint_text="e.g. ACME-0091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_company_acct = ft.TextField(label="Contractor Account #", hint_text="e.g. ACME-0091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     # 3. Project Site Contact Controls
-    tf_contact_first = ft.TextField(label="Site Contact First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_last = ft.TextField(label="Site Contact Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_email = ft.TextField(label="Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_phone = ft.TextField(label="Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_contact_first = ft.TextField(label="Project Site Contact First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_contact_last = ft.TextField(label="Project Site Contact Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_contact_email = ft.TextField(label="Project Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_contact_phone = ft.TextField(label="Project Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     # 4. Sales Rep Controls
     sales_instructions_note = ft.Text(
@@ -471,7 +471,8 @@ def build_service_intake_form(
     dd_team_code = ft.Dropdown(label="Team Code*", options=[ft.dropdown.Option(c) for c in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     tf_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_company = ft.TextField(label="Contractor / Client Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_company = ft.TextField(label="Contractor*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_company_acct = ft.TextField(label="Contractor Account #", hint_text="e.g. ACME091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
