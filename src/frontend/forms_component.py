@@ -536,6 +536,7 @@ def build_service_intake_form(
         tf_job_num.value = proj_data.get("tbc_job_number", "")
         tf_proj_name.value = proj_data.get("project_name", "")
         tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("company_name", "")
+        tf_company_acct.value = proj_data.get("tbco_account_number") or ""
         tf_site_name.value = proj_data.get("site_name", "")
 
         tf_street_1.value = proj_data.get("street_address_1", "")
@@ -562,6 +563,7 @@ def build_service_intake_form(
 
         tf_job_num.value = ""
         tf_company.value = ""
+        tf_company_acct.value = ""
         tf_site_name.value = ""
         tf_proj_name.value = ""
 
@@ -600,6 +602,10 @@ def build_service_intake_form(
                 last_name=tf_sales_last.value.strip(),
                 user_phone=tf_sales_phone.value.strip()
             )
+
+        if tf_company.value:
+            acct_val = tf_company_acct.value.strip().upper() if tf_company_acct.value else f"CON-{tf_job_num.value.strip().upper()[:4]}"
+            resolve_contractor(acct_val, tf_company.value.strip())
 
         req_id = f"REQ-{int(time.time())}"
         triage_val = "Dispatched" if (dd_technician.value and dd_technician.value.strip()) else "Unassigned"
@@ -670,7 +676,7 @@ def build_service_intake_form(
         content=ft.Column([
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
             ft.Row([tf_sales_email, tf_sales_phone, dd_team_code], spacing=10),
-            ft.Row([tf_job_num, tf_company], spacing=10),
+            ft.Row([tf_job_num, tf_company, tf_company_acct], spacing=10),
             ft.Row([tf_site_name, tf_proj_name], spacing=10),
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal, tf_country], spacing=8),
