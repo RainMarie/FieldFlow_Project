@@ -5,7 +5,7 @@ Enforces business logic, state transitions, user permissions, and form validatio
 
 import re
 from typing import Tuple, Dict, Any, List
-from src.backend.db_manager import local_db
+from src.backend.db_manager import local_db, db as firestore_db
 
 # Valid state transitions for dispatches
 ALLOWED_TRANSITIONS = {
@@ -22,11 +22,15 @@ JOB_NUMBER_PATTERN = r"^\d{6}[a-zA-Z0-9]{2}$"
 
 
 def validate_project_space_exists(tbc_job_number: str) -> Tuple[bool, str]:
-    """Verifies that a project space row exists in database memory."""
+    """
+    Verifies that a project space row exists in local database memory.
+    If missing locally, checks Cloud Firestore and mirrors the record down.
+    """
     clean_job_num = str(tbc_job_number or "").strip().upper()
     if not clean_job_num:
         return False, "Job number is required to locate project space."
 
+    # 1. Check local SQLite relational storage
     try:
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
@@ -35,6 +39,32 @@ def validate_project_space_exists(tbc_job_number: str) -> Tuple[bool, str]:
                 return True, "Project space verified in database memory."
     except Exception as err:
         return False, f"Database query error during project space check: {err}"
+
+    # 2. Fallback: Check Cloud Firestore store if not cached locally
+    if firestore_db is not None:
+        try:
+            doc = firestore_db.collection("projects").document(clean_job_num).get()
+            if doc.exists:
+                p_data = doc.to_dict() or {}
+                proj_name = p_data.get("project_name", f"Project #{clean_job_num}")
+                site_name = p_data.get("site_name", "")
+                acct_num = p_data.get("tbco_account_number", "")
+                drive_id = p_data.get("drive_id", f"FLD-GDRV-{clean_job_num}")
+                stage_val = p_data.get("stage", "In Progress")
+
+                # Mirror into local SQLite so future local queries succeed
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO projects (
+                            tbc_job_number, project_name, site_name, tbco_account_number, drive_id, stage
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, (clean_job_num, proj_name, site_name, acct_num, drive_id, stage_val))
+                    conn.commit()
+
+                return True, "Project space verified and synchronized from Cloud Store."
+        except Exception as err:
+            return False, f"Cloud Store query error during project space check: {err}"
 
     return False, "Rule Violation: Project space must be created before submitting a service request."
 
@@ -95,9 +125,7 @@ def validate_user_role_permission(user_email: str, required_action: str) -> Tupl
             if not row:
                 return False, f"Access Denied: User '{clean_email}' not found in database."
 
-            # Convert sqlite3.Row to a standard Python dict to safely support .get() access
             user_data = dict(row)
-
             user_role = user_data.get("role")
             active_status = user_data.get("active_status", "Active")
 
@@ -117,6 +145,7 @@ def validate_user_role_permission(user_email: str, required_action: str) -> Tupl
         return False, f"Permission check database error: {err}"
 
     return True, "User permission granted."
+
 
 def validate_intake_form_data(form_data: Dict[str, Any]) -> Tuple[bool, str]:
     """Validates required form fields and enforces 123456XX job number formatting."""
