@@ -1,6 +1,7 @@
 """
 src/frontend/forms_component.py
-Consolidated data entry and intake form module for FieldFlow using standardized key names.
+Consolidated data entry and intake form module for FieldFlow using standardized key names,
+reordered search-first fields, auto-fill blur handlers, and thorough documentation.
 """
 
 import os
@@ -36,6 +37,7 @@ VALID_TEAM_CODES = [
 
 
 def make_field(label_text: str, input_control: ft.Control, expand: bool = True) -> ft.Container:
+    """Helper utility to wrap Flet controls with standardized accent titles."""
     return ft.Container(
         content=ft.Column([
             ft.Text(label_text, size=11, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE),
@@ -46,18 +48,95 @@ def make_field(label_text: str, input_control: ft.Control, expand: bool = True) 
 
 
 # =========================================================================
+# SHARED SEARCH & AUTO-FILL LOOKUP HELPERS
+# =========================================================================
+
+def on_contractor_blur_helper(tf_company: ft.TextField, tf_company_acct: ft.TextField, page: ft.Page):
+    """
+    Search & Auto-Fill Handler for Contractor fields.
+    Queries local SQLite and Cloud Firestore by Account # or Company Name.
+    """
+    clean_company = tf_company.value.strip() if tf_company.value else ""
+    clean_acct = tf_company_acct.value.strip().upper() if tf_company_acct.value else ""
+
+    if not clean_company and not clean_acct:
+        return
+
+    found_acct = None
+    found_name = None
+
+    # Step 1: Query local SQLite contractors table
+    try:
+        with local_db.get_connection() as conn:
+            cursor = conn.cursor()
+            if clean_acct:
+                cursor.execute(
+                    "SELECT tbco_account_number, company_name FROM contractors WHERE tbco_account_number = ?", 
+                    (clean_acct,)
+                )
+            else:
+                cursor.execute(
+                    "SELECT tbco_account_number, company_name FROM contractors WHERE LOWER(company_name) LIKE ? LIMIT 1", 
+                    (f"%{clean_company.lower()}%",)
+                )
+            row = cursor.fetchone()
+            if row:
+                found_acct = row["tbco_account_number"]
+                found_name = row["company_name"]
+    except Exception as err:
+        logging.warning(f"Local contractor lookup error: {err}")
+
+    # Step 2: Query Cloud Firestore if not found locally
+    if not found_acct and firestore_db is not None:
+        try:
+            if clean_acct:
+                doc = firestore_db.collection("contractors").document(clean_acct).get()
+                if doc.exists:
+                    data = doc.to_dict()
+                    found_acct = data.get("tbco_account_number", clean_acct)
+                    found_name = data.get("company_name", "")
+            else:
+                query = firestore_db.collection("contractors").stream()
+                for doc in query:
+                    data = doc.to_dict()
+                    comp_name = data.get("company_name", "")
+                    if clean_company.lower() in comp_name.lower():
+                        found_acct = doc.id or data.get("tbco_account_number", "")
+                        found_name = comp_name
+                        break
+        except Exception as err:
+            logging.warning(f"Cloud contractor lookup error: {err}")
+
+    # Step 3: Populate matched values and update UI
+    if found_acct or found_name:
+        if found_acct:
+            tf_company_acct.value = found_acct
+        if found_name:
+            tf_company.value = found_name
+        show_toast(page, f"Loaded Contractor: {found_name or found_acct}", kind="info")
+        if page:
+            page.update()
+
+
+# =========================================================================
 # 1. PROJECT CREATION FORM COMPONENT
 # =========================================================================
 
 def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:
+    """Project Creation Form with search-first field ordering and auto-fill handlers."""
+    
+    # ---------------------------------------------------------------------
     # 1. Core Project Controls
+    # ---------------------------------------------------------------------
     tf_job_num = ft.TextField(label="TBCo Job #*", hint_text="e.g. 287027TI", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_po_num = ft.TextField(label="PO #", hint_text="e.g. PO-88210", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    # ---------------------------------------------------------------------
     # 2. Location & Address Controls
+    # ---------------------------------------------------------------------
     tf_street_1 = ft.TextField(label="Street Address 1*", hint_text="e.g. 500 Medical Way", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_street_2 = ft.TextField(label="Street Address 2 / Suite", hint_text="e.g. Suite 300", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_city = ft.TextField(label="City*", hint_text="e.g. Tampa", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -65,18 +144,43 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_postal_code = ft.TextField(label="Postal Code*", hint_text="e.g. 33602", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    tf_company = ft.TextField(label="Contractor Company Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_company_acct = ft.TextField(label="Contractor Account #", hint_text="e.g. ACME-0091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    # ---------------------------------------------------------------------
+    # 3. Contractor Search Controls (Positioned FIRST in Contractor Section)
+    # ---------------------------------------------------------------------
+    contractor_instructions_note = ft.Text(
+        "Search existing contractor by Account # or Company Name to auto-fill contractor details below.",
+        size=11,
+        color=FieldFlowLightTheme.TEXT_MUTED
+    )
 
-    # 3. Project Site Contact Controls
+    tf_company = ft.TextField(
+        label="Contractor Company Name*", 
+        hint_text="e.g. Acme Mechanical", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
+    tf_company_acct = ft.TextField(
+        label="Contractor Account #", 
+        hint_text="e.g. ACME-0091", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
+
+    # ---------------------------------------------------------------------
+    # 4. Project Site Contact Controls
+    # ---------------------------------------------------------------------
     tf_contact_first = ft.TextField(label="Project Site Contact First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_last = ft.TextField(label="Project Site Contact Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_email = ft.TextField(label="Project Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_phone = ft.TextField(label="Project Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 4. Sales Rep Controls
+    # ---------------------------------------------------------------------
+    # 5. Sales Rep Search Controls (Positioned FIRST in Sales Section)
+    # ---------------------------------------------------------------------
     sales_instructions_note = ft.Text(
-        "Enter Sales Rep Email first to auto-fill details from Cloud Firestore, or type new details below to register a sales user.",
+        "Enter Sales Rep Email first to auto-fill details from database, or type new details below.",
         size=11,
         color=FieldFlowLightTheme.TEXT_MUTED
     )
@@ -122,20 +226,22 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
                 logging.warning(f"Local sales user lookup error: {err}")
 
         if not user_found:
-            show_toast(page, "New Sales Rep email. Please enter name and phone details below.", kind="info")
+            show_toast(page, "New Sales Rep email. Enter details below to register user.", kind="info")
 
         if page:
             page.update()
 
     tf_sales_email = ft.TextField(
-        label="Sales Rep Email",
+        label="Sales Rep Email*",
         hint_text="e.g. jdoe@tombarrow.com",
         border_color=FieldFlowLightTheme.ACCENT_BLUE,
         expand=True,
         on_blur=on_sales_email_blur
     )
 
-    # 5. File Upload Controls & Status
+    # ---------------------------------------------------------------------
+    # 6. File Upload Controls & Status
+    # ---------------------------------------------------------------------
     staged_photo_path = {"value": ""}
     staged_documents = []
 
@@ -298,20 +404,35 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         if on_success_callback:
             on_success_callback(proj_payload)
 
+    # ---------------------------------------------------------------------
+    # Form UI Layout Assembly (Search Fields Positioned First)
+    # ---------------------------------------------------------------------
     form_container = ft.Container(
         content=ft.Column([
             ft.Row([tf_job_num, tf_proj_name], spacing=10),
             ft.Row([tf_site_name, tf_po_num], spacing=10),
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal_code, tf_country], spacing=8),
+            
+            # Contractor Section: Search Fields FIRST
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            contractor_instructions_note,
             ft.Row([tf_company, tf_company_acct], spacing=10),
+            
+            # Contact Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([tf_contact_first, tf_contact_last], spacing=10),
             ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
+            
+            # Sales Rep Section: Search Field FIRST
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             sales_instructions_note,
             ft.Row([tf_sales_email], spacing=10),
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
             ft.Row([tf_sales_phone, dd_team_code], spacing=10),
+            
+            # Media & Submittal
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([btn_upload_photo, photo_status_txt], spacing=10),
             ft.Row([btn_upload_docs, docs_status_txt], spacing=10),
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
@@ -337,6 +458,7 @@ def build_asset_registration_tool(
     show_toast_fn,
     page: ft.Page
 ) -> ft.Column:
+    """Asset registration wizard for searching and linking equipment tags."""
     tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
 
     search_input_field = ft.TextField(label="Search Equipment Serial Number...", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -364,6 +486,7 @@ def build_asset_registration_tool(
 # =========================================================================
 
 def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Control:
+    """Master Parts Catalog entry form."""
     tf_sku = ft.TextField(hint_text="e.g. SKU-VALVE-01", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_manufacturer = ft.TextField(hint_text="e.g. Honeywell", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_description = ft.TextField(hint_text="e.g. 2-Way Control Valve 24V", border_color=FieldFlowLightTheme.ACCENT_BLUE)
@@ -393,6 +516,7 @@ def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Contr
 
 
 def build_manufacturer_form(page: ft.Page, on_success_callback=None) -> ft.Control:
+    """Master Manufacturer entry form."""
     tf_mfr_id = ft.TextField(hint_text="e.g. MFR-HW", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_company = ft.TextField(hint_text="e.g. Honeywell", border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
@@ -417,6 +541,7 @@ def build_manufacturer_form(page: ft.Page, on_success_callback=None) -> ft.Contr
 
 
 def build_truck_form(page: ft.Page, get_tech_options_fn=None, on_success_callback=None) -> ft.Control:
+    """Fleet Truck entry form."""
     tf_truck_id = ft.TextField(hint_text="e.g. TRUCK-01", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_plate = ft.TextField(hint_text="e.g. FL-88021", border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
@@ -441,6 +566,7 @@ def build_truck_form(page: ft.Page, get_tech_options_fn=None, on_success_callbac
 
 
 def build_master_forms(page: ft.Page, get_tech_options_fn=None, on_success_callback=None) -> ft.Control:
+    """Tabbed Master Data Catalog Container."""
     return ft.Tabs(
         selected_index=0,
         tabs=[
@@ -461,17 +587,98 @@ def build_service_intake_form(
     on_success_callback=None,
     get_tech_options_fn=None
 ) -> ft.Control:
-    """Form to submit new service intake requests using standardized field names across all layers."""
+    """Service Ticket Intake Form with search-first field ordering and auto-fill handlers."""
     
+    # ---------------------------------------------------------------------
+    # 1. Sales Rep Search Controls (Positioned FIRST in Sales Section)
+    # ---------------------------------------------------------------------
+    sales_instructions_note = ft.Text(
+        "Enter Sales Rep Email first to auto-fill details from database, or type new details below.",
+        size=11,
+        color=FieldFlowLightTheme.TEXT_MUTED
+    )
+
     tf_sales_first = ft.TextField(label="Sales Rep First Name*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_last = ft.TextField(label="Sales Rep Last Name*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_sales_email = ft.TextField(label="Sales Rep Email*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_phone = ft.TextField(label="Sales Rep Phone", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     dd_team_code = ft.Dropdown(label="Team Code*", options=[ft.dropdown.Option(c) for c in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    def on_sales_email_blur(e):
+        clean_email = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
+        if not clean_email:
+            return
+
+        user_found = False
+
+        if firestore_db is not None:
+            try:
+                doc = firestore_db.collection("users").document(clean_email).get()
+                if doc.exists:
+                    user_data = doc.to_dict()
+                    tf_sales_first.value = user_data.get("first_name", "")
+                    tf_sales_last.value = user_data.get("last_name", "")
+                    tf_sales_phone.value = user_data.get("user_phone", "")
+                    user_found = True
+                    show_toast(page, "Loaded Sales Rep from Cloud Firestore.", kind="info")
+            except Exception as err:
+                logging.warning(f"Cloud sales user lookup error: {err}")
+
+        if not user_found:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT first_name, last_name, user_phone FROM users WHERE LOWER(user_email) = ?", (clean_email,))
+                    row = cursor.fetchone()
+                    if row:
+                        tf_sales_first.value = row["first_name"] or ""
+                        tf_sales_last.value = row["last_name"] or ""
+                        tf_sales_phone.value = row["user_phone"] or ""
+                        user_found = True
+                        show_toast(page, "Loaded Sales Rep from local database.", kind="info")
+            except Exception as err:
+                logging.warning(f"Local sales user lookup error: {err}")
+
+        if not user_found:
+            show_toast(page, "New Sales Rep email. Enter details below to register user.", kind="info")
+
+        if page:
+            page.update()
+
+    tf_sales_email = ft.TextField(
+        label="Sales Rep Email*", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=on_sales_email_blur
+    )
+
+    # ---------------------------------------------------------------------
+    # 2. Contractor Search Controls (Positioned FIRST in Contractor Section)
+    # ---------------------------------------------------------------------
+    contractor_instructions_note = ft.Text(
+        "Search existing contractor by Account # or Company Name to auto-fill contractor details below.",
+        size=11,
+        color=FieldFlowLightTheme.TEXT_MUTED
+    )
+
+    tf_company = ft.TextField(
+        label="Contractor Company Name*", 
+        hint_text="e.g. Acme Mechanical", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
+    tf_company_acct = ft.TextField(
+        label="Contractor Account #", 
+        hint_text="e.g. ACME-0091", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
+
+    # ---------------------------------------------------------------------
+    # 3. Job & Location Controls
+    # ---------------------------------------------------------------------
     tf_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_company = ft.TextField(label="Contractor*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_company_acct = ft.TextField(label="Contractor Account #", hint_text="e.g. ACME091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
@@ -482,11 +689,17 @@ def build_service_intake_form(
     tf_postal = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    # ---------------------------------------------------------------------
+    # 4. Project Site Contact Controls
+    # ---------------------------------------------------------------------
     tf_contact_first = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_last = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    # ---------------------------------------------------------------------
+    # 5. Service Request & Dispatch Controls
+    # ---------------------------------------------------------------------
     dd_request_type = ft.Dropdown(
         label="Request Type*",
         options=[
@@ -672,16 +885,35 @@ def build_service_intake_form(
         if on_success_callback:
             on_success_callback(intake_payload)
 
+    # ---------------------------------------------------------------------
+    # Form UI Layout Assembly (Search Fields Positioned First)
+    # ---------------------------------------------------------------------
     form_container = ft.Container(
         content=ft.Column([
+            # Sales Rep Section: Search Field FIRST
+            sales_instructions_note,
+            ft.Row([tf_sales_email], spacing=10),
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
-            ft.Row([tf_sales_email, tf_sales_phone, dd_team_code], spacing=10),
-            ft.Row([tf_job_num, tf_company, tf_company_acct], spacing=10),
-            ft.Row([tf_site_name, tf_proj_name], spacing=10),
+            ft.Row([tf_sales_phone, dd_team_code], spacing=10),
+            
+            # Contractor Section: Search Fields FIRST
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            contractor_instructions_note,
+            ft.Row([tf_company, tf_company_acct], spacing=10),
+            
+            # Job & Location Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            ft.Row([tf_job_num, tf_site_name, tf_proj_name], spacing=10),
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal, tf_country], spacing=8),
+            
+            # Contact Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([tf_contact_first, tf_contact_last], spacing=10),
             ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
+            
+            # Service & Upload Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([dd_request_type], spacing=10),
             tf_issue,
             ft.Row([dd_technician, tf_scheduled_time], spacing=10),
