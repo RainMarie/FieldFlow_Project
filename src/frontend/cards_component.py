@@ -1,7 +1,8 @@
 """
 src/frontend/cards_component.py
 Consolidated card rendering module for FieldFlow using standardized key names,
-project photo rendering, Company Project Manager integration, and uniform FieldFlowLightTheme styling.
+project photo rendering, Company Project Manager integration, uniform FieldFlowLightTheme styling,
+and sanitized Drive space IDs for prefilling service requests.
 """
 
 import os
@@ -155,7 +156,14 @@ def build_project_card(
         client = project_data.get("contractor_company_name", "Partner")
         acct_no = project_data.get("tbco_account_number", "N/A")
         site_name = project_data.get("site_name", name)
-        drive_id = project_data.get("drive_id", f"FLD-DRIVE-{job_num}")
+        
+        # Bottom-Up Fix: Sanitize drive_id so None, empty strings, or placeholder defaults resolve cleanly
+        raw_drive_id = project_data.get("drive_id")
+        if not raw_drive_id or str(raw_drive_id).strip() in ["", "None", "FLD-0", "FLD-DRIVE-123456XX"]:
+            drive_id = f"FLD-GDRV-{job_num}"
+        else:
+            drive_id = str(raw_drive_id).strip()
+
         photo_url = project_data.get("photo_url", "")
 
         pm_f = project_data.get("pm_first_name", "")
@@ -167,7 +175,7 @@ def build_project_card(
         sales_ph = project_data.get("sales_rep_phone", "")
         team_code = project_data.get("team_code", "")
     else:
-        job_num, name, address, client, acct_no, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "N/A", "FLD-0", ""
+        job_num, name, address, client, acct_no, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "N/A", "FLD-GDRV-123456XX", ""
         st1, c_city, c_state = "", "", ""
         site_name = name
         pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
@@ -191,7 +199,7 @@ def build_project_card(
         "sales_rep_email": sales_em,
         "sales_rep_phone": sales_ph,
         "team_code": team_code,
-        "drive_id": drive_id,
+        "drive_id": drive_id,  # Guaranteed non-empty Project space string
         "photo_url": photo_url
     }
 
