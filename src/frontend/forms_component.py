@@ -123,7 +123,10 @@ def on_contractor_blur_helper(tf_company: ft.TextField, tf_company_acct: ft.Text
 # =========================================================================
 
 def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:
-    """Project Creation Form with search-first field ordering and auto-fill handlers."""
+    """
+    Project Creation Form with search-first field ordering, auto-fill handlers,
+    and Company Project Manager contact integration linked to contractor accounts.
+    """
     
     # ---------------------------------------------------------------------
     # 1. Core Project Controls
@@ -169,12 +172,12 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     )
 
     # ---------------------------------------------------------------------
-    # 4. Project Site Contact Controls
+    # 4. Company Project Manager Controls (Replaces Project Site Contact)
     # ---------------------------------------------------------------------
-    tf_contact_first = ft.TextField(label="Project Site Contact First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_last = ft.TextField(label="Project Site Contact Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_email = ft.TextField(label="Project Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_phone = ft.TextField(label="Project Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_first = ft.TextField(label="Company Project Manager First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_last = ft.TextField(label="Company Project Manager Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_email = ft.TextField(label="Company Project Manager Email", hint_text="e.g. asmith@acme.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_phone = ft.TextField(label="Company Project Manager Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
     # ---------------------------------------------------------------------
     # 5. Sales Rep Search Controls (Positioned FIRST in Sales Section)
@@ -295,10 +298,10 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         tf_postal_code.value = ""
         tf_country.value = "US"
 
-        tf_contact_first.value = ""
-        tf_contact_last.value = ""
-        tf_contact_email.value = ""
-        tf_contact_phone.value = ""
+        tf_pm_first.value = ""
+        tf_pm_last.value = ""
+        tf_pm_email.value = ""
+        tf_pm_phone.value = ""
 
         tf_sales_email.value = ""
         tf_sales_first.value = ""
@@ -334,8 +337,25 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         zip_val = tf_postal_code.value.strip() if tf_postal_code.value else ""
         country_val = tf_country.value.strip() if tf_country.value else "US"
 
+        pm_first = tf_pm_first.value.strip() if tf_pm_first.value else ""
+        pm_last = tf_pm_last.value.strip() if tf_pm_last.value else ""
+        pm_email = tf_pm_email.value.strip().lower() if tf_pm_email.value else ""
+        pm_phone = tf_pm_phone.value.strip() if tf_pm_phone.value else ""
+
         clean_site = resolve_location(s_name, street_1, street_2, city_val, state_val, zip_val, country_val)
         clean_acct = resolve_contractor(acct_no, company)
+
+        clean_pm_id = None
+        if pm_email:
+            from src.backend.db_manager import resolve_pm_contact
+            clean_pm_id = resolve_pm_contact(
+                tbco_account_number=clean_acct,
+                first_name=pm_first,
+                last_name=pm_last,
+                email=pm_email,
+                phone=pm_phone,
+                title="Project Manager"
+            )
 
         sales_email_val = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
         if sales_email_val:
@@ -359,6 +379,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "tbc_job_number": job_num,
             "site_name": clean_site,
             "tbco_account_number": clean_acct,
+            "pm_contact_id": clean_pm_id,
             "project_name": p_name,
             "contractor_company_name": company,
             "street_address_1": street_1,
@@ -367,10 +388,10 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "state": state_val,
             "postal_code": zip_val,
             "country": country_val,
-            "project_site_contact_first_name": tf_contact_first.value.strip() if tf_contact_first.value else "",
-            "project_site_contact_last_name": tf_contact_last.value.strip() if tf_contact_last.value else "",
-            "project_site_contact_email": tf_contact_email.value.strip().lower() if tf_contact_email.value else "",
-            "project_site_contact_phone": tf_contact_phone.value.strip() if tf_contact_phone.value else "",
+            "pm_first_name": pm_first,
+            "pm_last_name": pm_last,
+            "pm_email": pm_email,
+            "pm_phone": pm_phone,
             "sales_rep_email": sales_email_val,
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "team_code": dd_team_code.value if dd_team_code.value else "",
@@ -383,10 +404,10 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
-                        tbc_job_number, site_name, tbco_account_number, project_name, drive_id, stage
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name, drive_id, stage
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    job_num, clean_site, clean_acct, p_name, drive_id, "In Progress"
+                    job_num, clean_site, clean_acct, clean_pm_id, p_name, drive_id, "In Progress"
                 ))
                 conn.commit()
         except Exception as sql_err:
@@ -405,7 +426,7 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             on_success_callback(proj_payload)
 
     # ---------------------------------------------------------------------
-    # Form UI Layout Assembly (Search Fields Positioned First)
+    # Form UI Layout Assembly
     # ---------------------------------------------------------------------
     form_container = ft.Container(
         content=ft.Column([
@@ -414,17 +435,17 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal_code, tf_country], spacing=8),
             
-            # Contractor Section: Search Fields FIRST
+            # Contractor Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             contractor_instructions_note,
             ft.Row([tf_company, tf_company_acct], spacing=10),
             
-            # Contact Section
+            # Company Project Manager Section (Replaces Site Contact)
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
-            ft.Row([tf_contact_first, tf_contact_last], spacing=10),
-            ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
+            ft.Row([tf_pm_first, tf_pm_last], spacing=10),
+            ft.Row([tf_pm_email, tf_pm_phone], spacing=10),
             
-            # Sales Rep Section: Search Field FIRST
+            # Sales Rep Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             sales_instructions_note,
             ft.Row([tf_sales_email], spacing=10),
