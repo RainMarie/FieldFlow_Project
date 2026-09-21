@@ -13,6 +13,7 @@
 
 ### 📄 calendar_manager.py
 **Defined Functions/Classes:**
+- `def build_gcal_ticket_description(ticket_data: dict) -> str:`
 - `def __init__(self, calendar_service: GoogleCalendarService = None):`
 - `def publish_appointment(self, job_id: str, summary: str, location: str, description: str, start_iso: str, end_iso: str):`
 
@@ -65,6 +66,10 @@
 - `def get_sales_rep_email_for_dispatch(job_id: str) -> str:`
 - `def send_dispatch_receipt_email(job_id: str, receipt_data: Dict[str, Any]) -> bool:`
 
+### 📄 export_master_schema_matrix.py
+**Defined Functions/Classes:**
+- `def export_master_schema_matrix():`
+
 ### 📄 folder_gate.py
 **Defined Functions/Classes:**
 - `def initialize_drive_auth():`
@@ -111,11 +116,8 @@
 **Defined Functions/Classes:**
 - `def map_local_dispatch_to_cloud(db_client, local_row: dict) -> bool:`
 - `def dispatch_sync_in_background(db_client, local_row: dict):`
-- `def cloud_document_distribution_wrapper(job_number: str, payload: dict) -> bool:`
 - `def map_intake_to_cloud(db_client, intake_data: dict) -> bool:`
 - `def sync_intake_in_background(db_client, intake_data: dict):`
-- `def sync_intake_to_cloud(db_client, intake_id: str, new_status: str, assigned_job_number: Optional[str] = None, requested_date: Optional[str] = None) -> bool:`
-- `def dispatch_intake_sync_in_background(db_client, intake_id: str, new_status: str, assigned_job_number: Optional[str] = None, requested_date: Optional[str] = None):`
 
 ### 📄 template_factory.py
 **Defined Functions/Classes:**
@@ -171,13 +173,13 @@
 **Defined Functions/Classes:**
 - `def build_calendar_widget(page: ft.Page, on_ticket_select_callback):`
 - `def fetch_google_calendar_events(year: int, month: int):`
-- `def fetch_dispatches():`
+- `def fetch_dispatches(fetch_gcal: bool = False):`
 - `def get_status_color(status_str: str):`
 - `def build_tag_chip(dispatch_data):`
 - `def build_month_grid_view(dispatches):`
 - `def build_agenda_list_view(dispatches):`
 - `def build_technician_group_view(dispatches):`
-- `def refresh_calendar():`
+- `def refresh_calendar(fetch_gcal: bool = False):`
 - `def change_month(delta_months: int):`
 
 ### 📄 cards_component.py
@@ -229,6 +231,7 @@
 ### 📄 forms_component.py
 **Defined Functions/Classes:**
 - `def make_field(label_text: str, input_control: ft.Control, expand: bool = True) -> ft.Container:`
+- `def on_contractor_blur_helper(tf_company: ft.TextField, tf_company_acct: ft.TextField, page: ft.Page):`
 - `def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
 - `def on_sales_email_blur(e):`
 - `def on_photo_picked(e: ft.FilePickerResultEvent):`
@@ -237,7 +240,6 @@
 - `def submit_project_creation(e):`
 - `def build_asset_registration_tool(`
 - `def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Control:`
-- `def submit_part(e):`
 
 ### 📄 main.py
 **Defined Functions/Classes:**

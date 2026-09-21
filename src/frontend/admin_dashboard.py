@@ -252,6 +252,7 @@ def main(page: ft.Page):
 
     intake_form_widget = build_service_intake_form(
         page,
+        get_tech_options_fn=get_tech_options,
         on_success_callback=lambda payload: [
             setattr(intake_modal, 'open', False),
             load_live_triage_feed(),
@@ -369,8 +370,10 @@ def main(page: ft.Page):
         req_id = req_data.get("request_id") or "REQ-NEW"
         job_num = req_data.get("tbc_job_number") or "123456XX"
         job_type = req_data.get("request_type") or "VFD Startup"
+        job_id = f"JOB-{job_num}"
 
         try:
+            # 1. Update SQLite Local Storage
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -382,13 +385,49 @@ def main(page: ft.Page):
                 cursor.execute("""
                     INSERT OR REPLACE INTO dispatches (job_id, tbc_job_number, technician_email, scheduled_time, status, job_type)
                     VALUES (?, ?, ?, ?, 'Scheduled', ?)
-                """, (f"JOB-{job_num}", job_num, selected_tech, scheduled_date, job_type))
+                """, (job_id, job_num, selected_tech, scheduled_date, job_type))
+
+                # Query full intake details to construct rich Google Calendar payload
+                cursor.execute("SELECT * FROM intake_requests WHERE request_id = ?", (req_id,))
+                full_row = cursor.fetchone()
+                full_dict = dict(full_row) if full_row else req_data
+
                 conn.commit()
 
+            # 2. Update Cloud Firestore Storage
             if db is not None:
                 db.collection("intake_requests").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
 
-            show_toast_local(f"Dispatched Job #{job_num} to {selected_tech}!", kind="success")
+            # 3. Publish Rich Ticket Payload to Google Calendar
+            try:
+                from src.backend.calendar_manager import GoogleCalendarManager, build_gcal_ticket_description
+                cal_manager = GoogleCalendarManager()
+
+                street = full_dict.get("street_address_1", "")
+                city = full_dict.get("city", "")
+                state = full_dict.get("state", "")
+                zip_code = full_dict.get("postal_code", "")
+                full_address = f"{street}, {city}, {state} {zip_code}".strip(", ")
+
+                rich_desc = build_gcal_ticket_description(full_dict)
+
+                # Format start/end ISO timestamps for an 8 AM - 12 PM window
+                clean_date = scheduled_date[:10] if len(scheduled_date) >= 10 else datetime.now().strftime("%Y-%m-%d")
+                start_iso = f"{clean_date}T08:00:00Z"
+                end_iso = f"{clean_date}T12:00:00Z"
+
+                cal_manager.publish_appointment(
+                    job_id=job_id,
+                    summary=f"Job #{job_num} - {full_dict.get('project_name', 'Service Call')}",
+                    location=full_address,
+                    description=rich_desc,
+                    start_iso=start_iso,
+                    end_iso=end_iso
+                )
+            except Exception as cal_err:
+                print(f"Google Calendar sync note: {cal_err}")
+
+            show_toast_local(f"Dispatched Job #{job_num} to {selected_tech} & synced to Google Calendar!", kind="success")
             load_live_triage_feed()
             refresh_calendar_fn()
             execute_live_search(None)

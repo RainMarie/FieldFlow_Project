@@ -72,12 +72,12 @@ def build_calendar_widget(page: ft.Page, on_ticket_select_callback):
 
         return google_events
 
-    def fetch_dispatches():
-        """Fetches dispatches from local SQLite, Cloud Firestore, and live Google Calendar API."""
+    def fetch_dispatches(fetch_gcal: bool = False):
+        """Fetches dispatches from local SQLite, Cloud Firestore, and optionally live Google Calendar API."""
         rows = []
         seen_job_ids = set()
 
-        # Fetch SQLite dispatches
+        # Fetch SQLite dispatches (Instant local memory read)
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -111,15 +111,16 @@ def build_calendar_widget(page: ft.Page, on_ticket_select_callback):
             except Exception as err:
                 print(f"Calendar Firestore fetch error: {err}")
 
-        # Fetch Live Google Calendar Events
-        gcal_events = fetch_google_calendar_events(
-            active_date["value"].year,
-            active_date["value"].month
-        )
-        for g_event in gcal_events:
-            if g_event["job_id"] not in seen_job_ids:
-                rows.append(g_event)
-                seen_job_ids.add(g_event["job_id"])
+        # Live Google Calendar API HTTP fetch triggers ONLY on explicit demand
+        if fetch_gcal:
+            gcal_events = fetch_google_calendar_events(
+                active_date["value"].year,
+                active_date["value"].month
+            )
+            for g_event in gcal_events:
+                if g_event["job_id"] not in seen_job_ids:
+                    rows.append(g_event)
+                    seen_job_ids.add(g_event["job_id"])
 
         return rows
 
@@ -297,9 +298,9 @@ def build_calendar_widget(page: ft.Page, on_ticket_select_callback):
 
         return tech_row
 
-    def refresh_calendar():
+    def refresh_calendar(fetch_gcal: bool = False):
         calendar_body_container.controls.clear()
-        dispatches = fetch_dispatches()
+        dispatches = fetch_dispatches(fetch_gcal=fetch_gcal)
 
         if active_view["value"] == "Month":
             calendar_body_container.controls.append(build_month_grid_view(dispatches))
@@ -316,38 +317,62 @@ def build_calendar_widget(page: ft.Page, on_ticket_select_callback):
         year = active_date["value"].year + month // 12
         month = month % 12 + 1
         active_date["value"] = datetime(year, month, 1)
-        refresh_calendar()
+        refresh_calendar(fetch_gcal=True)
 
     def set_view_mode(mode_name: str):
         active_view["value"] = mode_name
         refresh_calendar()
 
-    btn_month = ft.ElevatedButton("Month View", on_click=lambda _: set_view_mode("Month"), style=FieldFlowLightTheme.get_primary_button_style())
-    btn_agenda = ft.OutlinedButton("Agenda View", on_click=lambda _: set_view_mode("Agenda"))
-    btn_tech = ft.OutlinedButton("Technician View", on_click=lambda _: set_view_mode("Technician"))
+    # Define navigation controls
+    prev_month_btn = ft.IconButton(
+        icon=ft.icons.CHEVRON_LEFT,
+        icon_color=FieldFlowLightTheme.PINK_PRIMARY,
+        on_click=lambda _: change_month(-1)
+    )
+    next_month_btn = ft.IconButton(
+        icon=ft.icons.CHEVRON_RIGHT,
+        icon_color=FieldFlowLightTheme.PINK_PRIMARY,
+        on_click=lambda _: change_month(1)
+    )
 
-    header_controls = ft.Row([
-        ft.Row([
-            ft.IconButton(icon=ft.icons.CHEVRON_LEFT, icon_color=FieldFlowLightTheme.PINK_PRIMARY, on_click=lambda _: change_month(-1)),
-            month_label_text,
-            ft.IconButton(icon=ft.icons.CHEVRON_RIGHT, icon_color=FieldFlowLightTheme.PINK_PRIMARY, on_click=lambda _: change_month(1)),
-        ], spacing=4),
-        ft.Row([btn_month, btn_agenda, btn_tech], spacing=8)
-    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+    btn_month = ft.ElevatedButton(
+        "Month View",
+        on_click=lambda _: set_view_mode("Month"),
+        style=FieldFlowLightTheme.get_primary_button_style()
+    )
+    btn_agenda = ft.OutlinedButton(
+        "Agenda View",
+        on_click=lambda _: set_view_mode("Agenda")
+    )
+    btn_tech = ft.OutlinedButton(
+        "Technician View",
+        on_click=lambda _: set_view_mode("Technician")
+    )
 
+    header_controls = ft.Row(
+        [
+            ft.Row([prev_month_btn, next_month_btn, month_label_text], spacing=4),
+            ft.Row([btn_month, btn_agenda, btn_tech], spacing=8)
+        ],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+    )
+
+    # Instantiate the layout container
     main_calendar_layout = ft.Container(
-        content=ft.Column([
-            header_controls,
-            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE),
-            calendar_body_container
-        ], spacing=10, expand=True),
-        padding=16,
-        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-        border_radius=10,
-        border=ft.border.all(2, FieldFlowLightTheme.BORDER_PINK_EDGE),
-        shadow=FieldFlowLightTheme.get_card_shadow(),
+        content=ft.Column(
+            [
+                header_controls,
+                ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=12),
+                calendar_body_container
+            ],
+            expand=True,
+            spacing=10
+        ),
         expand=True
     )
 
-    refresh_calendar()
+    # Initial load populates live Google Calendar events once on boot
+    refresh_calendar(fetch_gcal=True)
+
+    # Return the UI widget layout and refresh function handle
     return main_calendar_layout, refresh_calendar

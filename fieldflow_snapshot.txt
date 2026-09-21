@@ -722,7 +722,7 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # 9. INTAKE REQUESTS (FULLY STANDARDIZED WITH 24 COLUMNS)
+            # 9. INTAKE REQUESTS (NORMALIZED SCHEMA: SALES REP FK ONLY)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS intake_requests (
                     request_id TEXT PRIMARY KEY,
@@ -737,8 +737,6 @@ class LocalDatabaseManager:
                     state TEXT,
                     postal_code TEXT,
                     country TEXT DEFAULT 'US',
-                    sales_rep_first_name TEXT,
-                    sales_rep_last_name TEXT,
                     sales_rep_email TEXT,
                     sales_rep_phone TEXT,
                     project_site_contact_first_name TEXT,
@@ -975,6 +973,7 @@ def resolve_sales_user(
     user_email: str,
     first_name: Optional[str] = None,
     last_name: Optional[str] = None,
+    user_phone: Optional[str] = None,
     branch_city: Optional[str] = None
 ) -> str:
     clean_email = user_email.strip().lower()
@@ -994,6 +993,7 @@ def resolve_sales_user(
         "user_email": clean_email,
         "first_name": f_name,
         "last_name": l_name,
+        "user_phone": user_phone,
         "branch_city": branch_city,
         "role": "Sales",
         "active_status": "Active"
@@ -1010,12 +1010,17 @@ def resolve_sales_user(
         cursor.execute("SELECT user_email FROM users WHERE LOWER(user_email) = ?", (clean_email,))
         row = cursor.fetchone()
         if row:
+            cursor.execute("""
+                UPDATE users SET first_name = ?, last_name = ?, user_phone = COALESCE(?, user_phone)
+                WHERE LOWER(user_email) = ?
+            """, (f_name, l_name, user_phone, clean_email))
+            conn.commit()
             return row["user_email"]
 
         cursor.execute("""
-            INSERT INTO users (user_email, first_name, last_name, branch_city, role)
-            VALUES (?, ?, ?, ?, 'Sales')
-        """, (clean_email, f_name, l_name, branch_city))
+            INSERT INTO users (user_email, first_name, last_name, user_phone, branch_city, role)
+            VALUES (?, ?, ?, ?, ?, 'Sales')
+        """, (clean_email, f_name, l_name, user_phone, branch_city))
         conn.commit()
         return clean_email
 
@@ -1074,10 +1079,19 @@ def resolve_pm_contact(
 
 
 def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
-    """Executes atomic service intake transaction using standardized 24-field names."""
+    """Executes atomic service intake transaction using normalized intake_requests schema."""
     req_id = form_data.get("request_id") or f"REQ-{uuid.uuid4().hex[:8].upper()}"
     job_no = form_data.get("tbc_job_number", "889900XX").strip().upper()
     submission_time = form_data.get("submission_timestamp") or datetime.now(timezone.utc).isoformat()
+
+    sales_email = (form_data.get("sales_rep_email") or "").strip().lower()
+    if sales_email:
+        resolve_sales_user(
+            user_email=sales_email,
+            first_name=form_data.get("sales_rep_first_name", ""),
+            last_name=form_data.get("sales_rep_last_name", ""),
+            user_phone=form_data.get("sales_rep_phone", "")
+        )
 
     standardized_payload = {
         "request_id": req_id,
@@ -1092,9 +1106,7 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "state": form_data.get("state", ""),
         "postal_code": form_data.get("postal_code", ""),
         "country": form_data.get("country", "US"),
-        "sales_rep_first_name": form_data.get("sales_rep_first_name", ""),
-        "sales_rep_last_name": form_data.get("sales_rep_last_name", ""),
-        "sales_rep_email": form_data.get("sales_rep_email", ""),
+        "sales_rep_email": sales_email,
         "sales_rep_phone": form_data.get("sales_rep_phone", ""),
         "project_site_contact_first_name": form_data.get("project_site_contact_first_name", ""),
         "project_site_contact_last_name": form_data.get("project_site_contact_last_name", ""),
@@ -1106,14 +1118,14 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "submission_timestamp": submission_time
     }
 
-    # Step A: Primary Cloud Write to Firestore 'intake_ledger'
+    # Primary Cloud Write to Firestore 'intake_requests' collection
     if db is not None:
         try:
-            db.collection("intake_ledger").document(req_id).set(standardized_payload, merge=True)
+            db.collection("intake_requests").document(req_id).set(standardized_payload, merge=True)
         except Exception as err:
             logging.warning(f"Cloud transaction note: {err}")
 
-    # Step B: Offline Local SQLite Mirror
+    # Offline Local SQLite Mirror
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN TRANSACTION;")
@@ -1122,11 +1134,11 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
             INSERT OR REPLACE INTO intake_requests (
                 request_id, tbc_job_number, team_code, site_name, project_name,
                 contractor_company_name, street_address_1, street_address_2, city, state,
-                postal_code, country, sales_rep_first_name, sales_rep_last_name, sales_rep_email,
-                sales_rep_phone, project_site_contact_first_name, project_site_contact_last_name,
+                postal_code, country, sales_rep_email, sales_rep_phone,
+                project_site_contact_first_name, project_site_contact_last_name,
                 project_site_contact_email, project_site_contact_phone, issue_description,
                 triage_status, request_type, submission_timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, tuple(standardized_payload.values()))
 
         conn.commit()
@@ -1644,8 +1656,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 def get_sales_rep_email_for_dispatch(job_id: str) -> str:
     """
     Retrieves the sales rep email associated with a job dispatch.
-    Checks dispatches first, falls back to intake_requests via tbc_job_number,
-    or defaults to sales1@tombarrow.com if unassigned.
+    Queries dispatches first, falls back to intake_requests via tbc_job_number.
     """
     clean_job_id = str(job_id or "").strip()
     if not clean_job_id:
@@ -1676,18 +1687,14 @@ def get_sales_rep_email_for_dispatch(job_id: str) -> str:
 
 
 def send_dispatch_receipt_email(job_id: str, receipt_data: Dict[str, Any]) -> bool:
-    """
-    Constructs and dispatches a completion receipt email to the designated sales representative.
-    """
+    """Constructs and dispatches a completion receipt email to the sales rep."""
     recipient_email = get_sales_rep_email_for_dispatch(job_id)
     tbc_job_number = receipt_data.get("tbc_job_number", "UNKNOWN")
     summary = receipt_data.get("work_summary", "No details provided.")
 
-    logging.info(f"📧 [EMAIL DISPATCH] Preparing receipt for Job '{job_id}' (TBC #{tbc_job_number})...")
-    logging.info(f"📧 [EMAIL RECIPIENT] Target: {recipient_email}")
-
+    logging.info(f"[EMAIL DISPATCH] Preparing receipt for Job '{job_id}' (TBC #{tbc_job_number})...")
+    
     try:
-        # Formatted receipt payload
         email_body = (
             f"Dispatch Completion Receipt\n"
             f"---------------------------\n"
@@ -1695,17 +1702,165 @@ def send_dispatch_receipt_email(job_id: str, receipt_data: Dict[str, Any]) -> bo
             f"TBC Job Number: {tbc_job_number}\n"
             f"Summary: {summary}\n"
         )
-        logging.info(f"🎉 [EMAIL SUCCESS] Receipt delivered successfully to '{recipient_email}'.")
+        logging.info(f"[EMAIL SUCCESS] Receipt delivered successfully to '{recipient_email}'.")
         return True
     except Exception as e:
-        logging.error(f"❌ [EMAIL FAILED] Failed sending receipt to '{recipient_email}': {e}")
+        logging.error(f"[EMAIL FAILED] Failed sending receipt to '{recipient_email}': {e}")
         return False
+
+========================================
+FILE: src\backend\export_master_schema_matrix.py
+========================================
+
+"""
+src/backend/export_master_schema_matrix.py
+Utility script that inspects all 16 SQLite tables and compares field labels
+against Cloud Firestore collections, exporting a unified CSV matrix spreadsheet.
+"""
+
+import os
+import sys
+import csv
+import sqlite3
+import logging
+
+# Dynamically add project root directory to Python path
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.dirname(CURRENT_DIR)
+ROOT_DIR = os.path.dirname(SRC_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
+
+from src.backend.db_manager import local_db, db as firestore_db
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Explicit mapping between SQLite tables and Cloud Firestore collections
+COLLECTION_MAP = {
+    "intake_requests": "intake_ledger",
+    "dispatches": "dispatches",
+    "projects": "projects",
+    "assets": "assets",
+    "users": "users",
+    "locations": "locations",
+    "contractors": "contractors"
+}
+
+
+def export_master_schema_matrix():
+    """Extracts SQLite schemas and Firestore keys, writing a unified CSV spreadsheet."""
+    output_filename = os.path.join(ROOT_DIR, "fieldflow_master_schema_matrix.csv")
+    logging.info(f"Starting schema matrix extraction to: {output_filename}")
+    
+    # -------------------------------------------------------------------------
+    # 1. PARSE LOCAL SQLITE SCHEMAS
+    # -------------------------------------------------------------------------
+    sqlite_schema = {}
+    try:
+        with local_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            for table in tables:
+                cursor.execute(f"PRAGMA table_info({table});")
+                cols = cursor.fetchall()
+                
+                cursor.execute(f"PRAGMA foreign_key_list({table});")
+                fks = cursor.fetchall()
+                
+                fk_map = {fk[3]: f"{fk[2]}({fk[4]})" for fk in fks}
+                
+                sqlite_schema[table] = []
+                for col in cols:
+                    col_name = col[1]
+                    col_type = col[2]
+                    is_pk = bool(col[5])
+                    fk_ref = fk_map.get(col_name, "N/A")
+                    
+                    key_role = "Primary Key" if is_pk else ("Foreign Key" if fk_ref != "N/A" else "Standard Column")
+                    sqlite_schema[table].append({
+                        "name": col_name,
+                        "type": col_type,
+                        "role": key_role,
+                        "fk_ref": fk_ref
+                    })
+        logging.info(f"Parsed {len(sqlite_schema)} SQLite tables successfully.")
+    except Exception as e:
+        logging.error(f"Failed to parse SQLite schema: {e}")
+        return
+
+    # -------------------------------------------------------------------------
+    # 2. SAMPLE CLOUD FIRESTORE COLLECTIONS
+    # -------------------------------------------------------------------------
+    firestore_keys = {}
+    if firestore_db is not None:
+        logging.info("Cloud Firestore client online. Sampling collection documents...")
+        for sqlite_table, collection_name in COLLECTION_MAP.items():
+            try:
+                docs = list(firestore_db.collection(collection_name).limit(1).stream())
+                if docs:
+                    doc_data = docs[0].to_dict()
+                    firestore_keys[collection_name] = set(doc_data.keys())
+                else:
+                    firestore_keys[collection_name] = set()
+            except Exception as err:
+                logging.warning(f"Could not sample Firestore collection '{collection_name}': {err}")
+                firestore_keys[collection_name] = set()
+    else:
+        logging.warning("Firestore client offline. CSV will populate local SQLite keys.")
+
+    # -------------------------------------------------------------------------
+    # 3. WRITE UNIFIED MASTER MATRIX TO CSV
+    # -------------------------------------------------------------------------
+    try:
+        with open(output_filename, "w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow([
+                "Database Layer",
+                "Table / Collection Name",
+                "Field / Column Name",
+                "Data Type",
+                "Key Role",
+                "Foreign Key Reference",
+                "Firestore Equivalent Collection",
+                "Parity Match Status"
+            ])
+            
+            for table, cols in sqlite_schema.items():
+                target_collection = COLLECTION_MAP.get(table, "N/A (Local Only)")
+                fs_set = firestore_keys.get(target_collection, set())
+                
+                for col in cols:
+                    c_name = col["name"]
+                    
+                    if target_collection == "N/A (Local Only)":
+                        parity = "Local SQLite Table Only"
+                    elif c_name in fs_set or (c_name == "request_id" and "request_id" in fs_set):
+                        parity = "1-to-1 Match"
+                    elif fs_set:
+                        parity = "Missing in Firestore Sample"
+                    else:
+                        parity = "Firestore Collection Empty / Unsampled"
+
+                    writer.writerow([
+                        "SQLite",
+                        table,
+                        c_name,
+                        col["type"],
+                        col["role"],
+                        col["fk_ref"],
+                        target_collection,
+                        parity
+                    ])
+
+        logging.info(f"🎉 Master Schema Spreadsheet generated at: {output_filename}")
+    except Exception as e:
+        logging.error(f"Failed to write CSV file: {e}")
 
 
 if __name__ == "__main__":
-    print("Testing Email Service Module...")
-    test_email = get_sales_rep_email_for_dispatch("JOB-TEST")
-    print(f"Resolved Email: {test_email}")
+    export_master_schema_matrix()
 
 ========================================
 FILE: src\backend\folder_gate.py
@@ -1790,7 +1945,7 @@ Enforces business logic, state transitions, user permissions, and form validatio
 
 import re
 from typing import Tuple, Dict, Any, List
-from src.backend.db_manager import local_db
+from src.backend.db_manager import local_db, db as firestore_db
 
 # Valid state transitions for dispatches
 ALLOWED_TRANSITIONS = {
@@ -1807,11 +1962,15 @@ JOB_NUMBER_PATTERN = r"^\d{6}[a-zA-Z0-9]{2}$"
 
 
 def validate_project_space_exists(tbc_job_number: str) -> Tuple[bool, str]:
-    """Verifies that a project space row exists in database memory."""
+    """
+    Verifies that a project space row exists in local database memory.
+    If missing locally, checks Cloud Firestore and mirrors the record down.
+    """
     clean_job_num = str(tbc_job_number or "").strip().upper()
     if not clean_job_num:
         return False, "Job number is required to locate project space."
 
+    # 1. Check local SQLite relational storage
     try:
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
@@ -1820,6 +1979,32 @@ def validate_project_space_exists(tbc_job_number: str) -> Tuple[bool, str]:
                 return True, "Project space verified in database memory."
     except Exception as err:
         return False, f"Database query error during project space check: {err}"
+
+    # 2. Fallback: Check Cloud Firestore store if not cached locally
+    if firestore_db is not None:
+        try:
+            doc = firestore_db.collection("projects").document(clean_job_num).get()
+            if doc.exists:
+                p_data = doc.to_dict() or {}
+                proj_name = p_data.get("project_name", f"Project #{clean_job_num}")
+                site_name = p_data.get("site_name", "")
+                acct_num = p_data.get("tbco_account_number", "")
+                drive_id = p_data.get("drive_id", f"FLD-GDRV-{clean_job_num}")
+                stage_val = p_data.get("stage", "In Progress")
+
+                # Mirror into local SQLite so future local queries succeed
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO projects (
+                            tbc_job_number, project_name, site_name, tbco_account_number, drive_id, stage
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, (clean_job_num, proj_name, site_name, acct_num, drive_id, stage_val))
+                    conn.commit()
+
+                return True, "Project space verified and synchronized from Cloud Store."
+        except Exception as err:
+            return False, f"Cloud Store query error during project space check: {err}"
 
     return False, "Rule Violation: Project space must be created before submitting a service request."
 
@@ -1880,9 +2065,7 @@ def validate_user_role_permission(user_email: str, required_action: str) -> Tupl
             if not row:
                 return False, f"Access Denied: User '{clean_email}' not found in database."
 
-            # Convert sqlite3.Row to a standard Python dict to safely support .get() access
             user_data = dict(row)
-
             user_role = user_data.get("role")
             active_status = user_data.get("active_status", "Active")
 
@@ -1902,6 +2085,7 @@ def validate_user_role_permission(user_email: str, required_action: str) -> Tupl
         return False, f"Permission check database error: {err}"
 
     return True, "User permission granted."
+
 
 def validate_intake_form_data(form_data: Dict[str, Any]) -> Tuple[bool, str]:
     """Validates required form fields and enforces 123456XX job number formatting."""
@@ -2314,7 +2498,6 @@ FILE: src\backend\search_engine.py
 """
 src/backend/search_engine.py
 Dedicated query execution engine for Admin Portal and Mobile Suite application search views.
-Utilizes database indexes on site_name, company_name, equipment_tag, and part_description.
 """
 
 import logging
@@ -2326,8 +2509,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
     """
-    Executes a multi-table search across Projects, Contractors, Users, and Intake Requests
-    for administrative dashboard workflows. Uses indexes on site_name and company_name.
+    Executes a multi-table search across Projects, Contractors, Users, and Intake Requests.
+    Concatenates first_name and last_name for user lookups.
     """
     clean_term = str(search_term or "").strip().lower()
     if not clean_term:
@@ -2353,9 +2536,9 @@ def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
                 
                 UNION ALL
                 
-                SELECT 'User' AS category, u.user_email AS key_id, u.user_name || ' (' || u.role || ')' AS detail 
+                SELECT 'User' AS category, u.user_email AS key_id, (u.first_name || ' ' || u.last_name || ' (' || u.role || ')') AS detail 
                 FROM users u
-                WHERE LOWER(u.user_email) LIKE ? OR LOWER(u.user_name) LIKE ?
+                WHERE LOWER(u.user_email) LIKE ? OR LOWER(u.first_name || ' ' || u.last_name) LIKE ?
                 
                 UNION ALL
                 
@@ -2376,7 +2559,6 @@ def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
 def search_mobile_portal(search_term: str, tech_email: str) -> List[Dict[str, Any]]:
     """
     Executes a technician-scoped search across Dispatches, Equipment Assets, and Parts Catalog.
-    Uses indexes on equipment_tag and part_description.
     """
     clean_term = str(search_term or "").strip().lower()
     clean_tech = str(tech_email or "").strip().lower()
@@ -2416,12 +2598,6 @@ def search_mobile_portal(search_term: str, tech_email: str) -> List[Dict[str, An
             
     return results
 
-
-if __name__ == "__main__":
-    print("Testing Search Engine Module...")
-    admin_results = search_admin_portal("test")
-    print(f"Admin Search Returned {len(admin_results)} records.")
-
 ========================================
 FILE: src\backend\sync_engine.py
 ========================================
@@ -2439,7 +2615,6 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-# Configure system logging to monitor background behavior cleanly
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
@@ -2455,12 +2630,10 @@ def map_local_dispatch_to_cloud(db_client, local_row: dict) -> bool:
     job_id = local_row.get("job_id")
     tbc_job_number = local_row.get("tbc_job_number")
     
-    # Enforce strict 8-character job identifier anchor requirement
     if not tbc_job_number or len(tbc_job_number) < 8:
         logging.error(f"[SECURITY BLOCK] Rejects cloud instantiation: Invalid 8-digit job identifier.")
         return False
 
-    # Normalized Cloud Payload aligned with updated schema
     cloud_payload = {
         "job_id": job_id,
         "tbc_job_number": tbc_job_number,
@@ -2468,19 +2641,16 @@ def map_local_dispatch_to_cloud(db_client, local_row: dict) -> bool:
         "site_name": local_row.get("site_name"),
         "sales_rep_email": local_row.get("sales_rep_email"),
         "technician_email": local_row.get("technician_email"),
-        "registration_status": local_row.get("registration_status", "Registration Complete"),
+        "status": local_row.get("status", "Scheduled"),
         "last_modified_timestamp": datetime.now(timezone.utc)
     }
 
-    # --- Traffic Cop Collision Retry Loop ---
     MAX_ATTEMPTS = 3
-    
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             logging.info(f"[SYNC ATTEMPT {attempt}/{MAX_ATTEMPTS}] Sending write packet for Job {job_id}...")
-            
             db_client.collection("dispatches").document(job_id).set(cloud_payload, merge=True)
-            logging.info(f"🎉 [CLOUD SYNC SUCCESS] Document {job_id} successfully mapped to Firestore.")
+            logging.info(f"[CLOUD SYNC SUCCESS] Document {job_id} successfully mapped to Firestore.")
             return True
             
         except Exception as error_token:
@@ -2488,149 +2658,86 @@ def map_local_dispatch_to_cloud(db_client, local_row: dict) -> bool:
             logging.warning(f"Cloud write traffic conflict detected on row: {str(error_token)}")
             
             if attempt < MAX_ATTEMPTS:
-                logging.warning(f"Collision Buffer: Retrying in {jitter_delay:.2f} seconds...")
                 time.sleep(jitter_delay)
             else:
-                logging.error("Collision Buffer: Max retry attempts (3) exhausted. Shifting data safely back to fallback storage.")
+                logging.error("Collision Buffer: Max retry attempts (3) exhausted.")
                 
     return False
 
 
 def dispatch_sync_in_background(db_client, local_row: dict):
-    """
-    Detaches the cloud upload operation from the main visual screen,
-    spawning a silent background thread so the screen never freezes.
-    """
+    """Spawns an isolated background thread for dispatch cloud synchronization."""
     worker_thread = threading.Thread(
         target=map_local_dispatch_to_cloud,
         args=(db_client, local_row),
         daemon=True
     )
     worker_thread.start()
-    logging.info(f"🧵 [THREAD DEPLOYED] Asynchronous cloud sync engine engaged for Job {local_row.get('job_id', 'UNKNOWN')}.")
 
-
-def cloud_document_distribution_wrapper(job_number: str, payload: dict) -> bool:
-    """
-    Validates job numbers against company formatting standards before pushing to cloud.
-    """
-    pattern = r"^\d{6}[a-zA-Z]{2}$"
-    
-    if not job_number or not bool(re.match(pattern, job_number.strip())):
-        print(f"[SECURITY BLOCK] Rejects cloud sync instantiation for invalid token: '{job_number}'")
-        return False
-
-    print(f"[CLOUD SYNC SUCCESS] Job {job_number} approved. Passing payload to Firestore.")
-    return True
-
-
-# =========================================================================
-# INTAKE LEDGER CLOUD SYNC WRAPPER
-# =========================================================================
 
 def map_intake_to_cloud(db_client, intake_data: dict) -> bool:
     """
-    Takes a local intake request record and uploads it to the 'intake_ledger' cloud collection.
-    Includes normalized site names, account numbers, and sales emails in the cloud payload.
+    Takes a local intake request record and uploads it to the standardized 'intake_requests' cloud collection.
     """
     if db_client is None:
         logging.warning("[INTAKE CLOUD SKIP] Cloud store routing offline. Retaining intake record locally.")
         return False
 
-    intake_id = intake_data.get("intake_id") or intake_data.get("request_id")
-    if not intake_id:
-        logging.error("[SECURITY BLOCK] Cannot sync intake record without a valid intake_id.")
+    request_id = intake_data.get("request_id")
+    if not request_id:
+        logging.error("[SECURITY BLOCK] Cannot sync intake record without a valid request_id.")
         return False
 
-    # Aligned schema payload keys
     cloud_payload = {
-        "intake_id": intake_id,
-        "tbc_job_number": intake_data.get("tbc_job_number") or intake_data.get("assigned_job_number"),
-        "tbco_account_number": intake_data.get("tbco_account_number") or intake_data.get("contractor_account_number"),
-        "site_name": intake_data.get("site_name") or intake_data.get("project_site_address") or "Unspecified Location",
-        "sales_rep_email": intake_data.get("sales_rep_email") or intake_data.get("sales_team_email"),
-        "requested_date": intake_data.get("requested_date"),
-        "client_name": intake_data.get("client_name") or intake_data.get("contractor_company_name") or "Unspecified Client",
-        "contact_phone": intake_data.get("contact_phone") or intake_data.get("requestor_phone") or "",
-        "issue_description": intake_data.get("issue_description") or "No issue description provided.",
-        "intake_source": intake_data.get("intake_source") or intake_data.get("request_source") or "WEB_FORM",
-        "status": intake_data.get("status") or intake_data.get("triage_status") or "PENDING_TRIAGE",
-        "created_at": intake_data.get("created_at") or intake_data.get("submission_timestamp") or datetime.now(timezone.utc).isoformat(),
-        "created_by": intake_data.get("created_by") or intake_data.get("requestor_email") or "SYSTEM",
+        "request_id": request_id,
+        "tbc_job_number": intake_data.get("tbc_job_number"),
+        "team_code": intake_data.get("team_code"),
+        "site_name": intake_data.get("site_name"),
+        "project_name": intake_data.get("project_name"),
+        "contractor_company_name": intake_data.get("contractor_company_name"),
+        "street_address_1": intake_data.get("street_address_1"),
+        "street_address_2": intake_data.get("street_address_2"),
+        "city": intake_data.get("city"),
+        "state": intake_data.get("state"),
+        "postal_code": intake_data.get("postal_code"),
+        "country": intake_data.get("country", "US"),
+        "sales_rep_email": intake_data.get("sales_rep_email"),
+        "sales_rep_phone": intake_data.get("sales_rep_phone"),
+        "project_site_contact_first_name": intake_data.get("project_site_contact_first_name"),
+        "project_site_contact_last_name": intake_data.get("project_site_contact_last_name"),
+        "project_site_contact_email": intake_data.get("project_site_contact_email"),
+        "project_site_contact_phone": intake_data.get("project_site_contact_phone"),
+        "issue_description": intake_data.get("issue_description"),
+        "triage_status": intake_data.get("triage_status", "Unassigned"),
+        "request_type": intake_data.get("request_type", "VFD Startup"),
+        "submission_timestamp": intake_data.get("submission_timestamp", datetime.now(timezone.utc).isoformat()),
         "last_modified_timestamp": datetime.now(timezone.utc)
     }
 
     MAX_ATTEMPTS = 3
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            logging.info(f"☁️ [INTAKE CLOUD SYNC {attempt}/{MAX_ATTEMPTS}] Syncing intake {intake_id} to Firestore...")
-            db_client.collection("intake_ledger").document(intake_id).set(cloud_payload, merge=True)
-            logging.info(f"🎉 [INTAKE CLOUD SUCCESS] Document {intake_id} mapped to cloud intake_ledger.")
+            logging.info(f"[INTAKE CLOUD SYNC {attempt}/{MAX_ATTEMPTS}] Syncing intake {request_id} to Firestore...")
+            db_client.collection("intake_requests").document(request_id).set(cloud_payload, merge=True)
+            logging.info(f"[INTAKE CLOUD SUCCESS] Document {request_id} mapped to collection intake_requests.")
             return True
         except Exception as error_token:
             jitter_delay = random.uniform(0.5, 1.5)
-            logging.warning(f"⚠️ [INTAKE SYNC CONFLICT] Write conflict on intake {intake_id}: {error_token}")
+            logging.warning(f"[INTAKE SYNC CONFLICT] Write conflict on intake {request_id}: {error_token}")
             if attempt < MAX_ATTEMPTS:
                 time.sleep(jitter_delay)
-            else:
-                logging.error(f"❌ [INTAKE SYNC EXHAUSTED] Max retries reached for intake {intake_id}. Retained locally.")
 
     return False
 
 
 def sync_intake_in_background(db_client, intake_data: dict):
-    """
-    Detaches the cloud intake upload operation from the UI screen,
-    running it silently in the background so office staff experience zero lag.
-    """
+    """Detaches cloud intake upload operation into an isolated background thread."""
     worker_thread = threading.Thread(
         target=map_intake_to_cloud,
         args=(db_client, intake_data),
         daemon=True
     )
     worker_thread.start()
-    logging.info(f"🧵 [INTAKE THREAD] Background sync worker engaged for Intake {intake_data.get('intake_id', 'UNKNOWN')}.")
-
-
-def sync_intake_to_cloud(db_client, intake_id: str, new_status: str, assigned_job_number: Optional[str] = None, requested_date: Optional[str] = None) -> bool:
-    """
-    Updates status, assigned job number, and requested date of an intake document in Cloud Firestore.
-    """
-    if db_client is None:
-        logging.warning(f"⚠️ [CLOUD SYNC SKIP] Cloud client offline. Skipping Firestore sync for intake '{intake_id}'.")
-        return False
-
-    try:
-        doc_ref = db_client.collection("intake_ledger").document(intake_id)
-
-        update_payload = {
-            "status": new_status,
-            "assigned_job_number": assigned_job_number,
-            "last_modified_timestamp": datetime.now(timezone.utc)
-        }
-        if requested_date is not None:
-            update_payload["requested_date"] = requested_date
-
-        doc_ref.set(update_payload, merge=True)
-        logging.info(f"☁️ [CLOUD INTAKE SYNC SUCCESS] Intake '{intake_id}' updated in Firestore (Status: {new_status}, Job #: {assigned_job_number}).")
-        return True
-
-    except Exception as e:
-        logging.error(f"❌ [CLOUD INTAKE SYNC ERROR] Failed to sync intake '{intake_id}' to Firestore: {e}")
-        return False
-
-
-def dispatch_intake_sync_in_background(db_client, intake_id: str, new_status: str, assigned_job_number: Optional[str] = None, requested_date: Optional[str] = None):
-    """
-    Spawns an isolated background thread to handle cloud status updates silently.
-    """
-    worker_thread = threading.Thread(
-        target=sync_intake_to_cloud,
-        args=(db_client, intake_id, new_status, assigned_job_number, requested_date),
-        daemon=True
-    )
-    worker_thread.start()
-    logging.info(f"🧵 [THREAD DEPLOYED] Asynchronous background intake sync engaged for record '{intake_id}'.")
 
 ========================================
 FILE: src\backend\template_factory.py
@@ -3402,7 +3509,6 @@ import threading
 from datetime import datetime, timedelta
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-# Backend Module Imports
 from src.backend.lifecycle_rules import validate_user_role_permission, validate_project_space_exists
 from src.backend.search_engine import search_admin_portal
 from src.frontend.theme import FieldFlowLightTheme
@@ -3415,7 +3521,6 @@ from src.backend.drive_service import (
     ensure_project_drive_folder
 )
 
-# Consolidated Frontend Module Imports
 from src.frontend.shared_utils import show_toast, open_drive_link
 from src.frontend.cards_component import (
     build_standard_ticket_card,
@@ -3436,9 +3541,6 @@ from src.frontend.forms_component import (
 from src.frontend.calendar_component import build_calendar_widget
 
 
-# =========================================================================
-# --- MAIN APPLICATION DASHBOARD ---
-# =========================================================================
 def main(page: ft.Page):
     page.title = "FieldFlow Admin Control Tower"
     page.window_maximized = True
@@ -3446,7 +3548,6 @@ def main(page: ft.Page):
     page.bgcolor = FieldFlowLightTheme.BG_LIGHT
     TITLE_FONT_SIZE = 18
 
-    # Start background Google Calendar synchronization listener
     calendar_listener = GoogleCalendarListener(interval_seconds=10)
     calendar_listener.start_monitoring()
 
@@ -3481,9 +3582,6 @@ def main(page: ft.Page):
 
     projects_view_filter = {"is_grid": True}
 
-    # =========================================================================
-    # --- DYNAMIC DROPDOWN OPTION HELPERS ---
-    # =========================================================================
     def get_tech_options():
         options = []
         try:
@@ -3549,14 +3647,8 @@ def main(page: ft.Page):
             print(f"Error fetching sales reps: {err}")
         return options
 
-    # =========================================================================
-    # --- TRIAGE INBOX UI CONTAINER DECLARATION ---
-    # =========================================================================
     triage_cards_container = ft.Column(spacing=10, scroll=ft.ScrollMode.ALWAYS, expand=True)
 
-    # =========================================================================
-    # --- LIVE TRIAGE INBOX FEED LOADER ---
-    # =========================================================================
     def load_live_triage_feed():
         triage_cards_container.controls.clear()
         pending_records = []
@@ -3565,9 +3657,11 @@ def main(page: ft.Page):
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT * FROM intake_requests
-                    WHERE triage_status IN ('Unassigned', 'PENDING_TRIAGE', 'Pending')
-                    ORDER BY submission_timestamp DESC
+                    SELECT i.*, u.first_name AS sales_first_name, u.last_name AS sales_last_name
+                    FROM intake_requests i
+                    LEFT JOIN users u ON i.sales_rep_email = u.user_email
+                    WHERE i.triage_status IN ('Unassigned', 'PENDING_TRIAGE', 'Pending')
+                    ORDER BY i.submission_timestamp DESC
                 """)
                 for row in cursor.fetchall():
                     r_dict = dict(row)
@@ -3578,7 +3672,7 @@ def main(page: ft.Page):
 
         if not pending_records and db is not None:
             try:
-                query = db.collection("intake_ledger").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
+                query = db.collection("intake_requests").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
                 for doc in query:
                     record = doc.to_dict()
                     record["request_id"] = doc.id
@@ -3645,9 +3739,6 @@ def main(page: ft.Page):
             triage_cards_container.controls.append(card)
         page.update()
 
-    # =========================================================================
-    # --- MODALS INTEGRATION ---
-    # =========================================================================
     intake_form_widget = build_service_intake_form(
         page,
         on_success_callback=lambda payload: [
@@ -3720,10 +3811,10 @@ def main(page: ft.Page):
         if db is not None:
             try:
                 if req_id:
-                    doc = db.collection("intake_ledger").document(req_id).get()
+                    doc = db.collection("intake_requests").document(req_id).get()
                     if doc.exists: row = doc.to_dict()
                 if not row and job_num:
-                    query = db.collection("intake_ledger").where("tbc_job_number", "==", job_num).limit(1).stream()
+                    query = db.collection("intake_requests").where("tbc_job_number", "==", job_num).limit(1).stream()
                     for d in query: row = d.to_dict()
             except Exception as err:
                 print(f"Error loading ticket record: {err}")
@@ -3784,7 +3875,7 @@ def main(page: ft.Page):
                 conn.commit()
 
             if db is not None:
-                db.collection("intake_ledger").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
+                db.collection("intake_requests").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
 
             show_toast_local(f"Dispatched Job #{job_num} to {selected_tech}!", kind="success")
             load_live_triage_feed()
@@ -3794,9 +3885,6 @@ def main(page: ft.Page):
         except Exception as err:
             show_toast_local(f"Dispatch Error: {err}", kind="error")
 
-    # =========================================================================
-    # --- COCKPIT PANEL ASSEMBLY ---
-    # =========================================================================
     left_triage_panel = ft.Container(
         content=ft.Column([
             ft.Text("1. TRIAGE INBOX", size=TITLE_FONT_SIZE, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PINK_PRIMARY),
@@ -3830,9 +3918,6 @@ def main(page: ft.Page):
         expand=True
     )
 
-    # =========================================================================
-    # --- SEARCH ENGINE & PROJECTS MANIFEST ---
-    # =========================================================================
     projects_list_container = ft.Row(wrap=True, spacing=12)
 
     def toggle_grid_list_view_mode(e):
@@ -3896,7 +3981,6 @@ def main(page: ft.Page):
     )
 
     def execute_live_search(e):
-        """Executes Cloud-First project search fetching photo_url for full image rendering."""
         search_query = search_input.value.strip().lower() if search_input and search_input.value else ""
         projects_list_container.controls.clear()
         is_grid_mode = projects_view_filter["is_grid"]
@@ -3913,12 +3997,12 @@ def main(page: ft.Page):
                     job_num = str(p_dict.get("tbc_job_number", "")).lower()
                     p_name = str(p_dict.get("project_name", "")).lower()
                     s_name = str(p_dict.get("site_name", "")).lower()
-                    c_name = str(p_dict.get("contractor_company_name") or p_dict.get("contractor_name") or p_dict.get("company_name", "")).lower()
+                    c_name = str(p_dict.get("contractor_company_name", "")).lower()
 
                     if not search_query or (search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name):
                         if not p_dict.get("drive_id"):
                             p_dict["drive_id"] = f"FLD-DRIVE-{p_dict.get('tbc_job_number')}"
-                        p_dict["contractor_name"] = c_name or "Partner"
+                        p_dict["contractor_company_name"] = c_name or "Partner"
                         db_rows.append(p_dict)
             except Exception as cloud_err:
                 print(f"Cloud project search offline/error: {cloud_err}")
@@ -3929,13 +4013,12 @@ def main(page: ft.Page):
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT p.tbc_job_number, p.project_name, p.site_name, p.drive_id,
-                               p.tbco_account_number, c.company_name
+                               p.tbco_account_number, c.company_name AS contractor_company_name
                         FROM projects p
                         LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
                     """)
                     for row in cursor.fetchall():
                         r_dict = dict(row)
-                        r_dict["contractor_name"] = r_dict.get("company_name") or "Partner"
                         if not r_dict.get("drive_id"):
                             r_dict["drive_id"] = f"FLD-DRIVE-{r_dict['tbc_job_number']}"
 
@@ -3945,7 +4028,7 @@ def main(page: ft.Page):
                             job_num = str(r_dict.get("tbc_job_number", "")).lower()
                             p_name = str(r_dict.get("project_name", "")).lower()
                             s_name = str(r_dict.get("site_name", "")).lower()
-                            c_name = str(r_dict.get("contractor_name", "")).lower()
+                            c_name = str(r_dict.get("contractor_company_name", "")).lower()
                             if search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name:
                                 db_rows.append(r_dict)
             except Exception as err:
@@ -3978,9 +4061,6 @@ def main(page: ft.Page):
         expand=True
     )
 
-    # =========================================================================
-    # --- USER ACCOUNT MANAGEMENT WIDGET (RESTORED) ---
-    # =========================================================================
     user_email_input = ft.TextField(label="User Email*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     user_first_name_input = ft.TextField(label="First Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     user_last_name_input = ft.TextField(label="Last Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
@@ -4195,9 +4275,6 @@ def main(page: ft.Page):
         border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE), shadow=FieldFlowLightTheme.get_card_shadow(), expand=True
     )
 
-    # =========================================================================
-    # --- AUDIT TRAIL VIEWER WIDGET (RESTORED) ---
-    # =========================================================================
     audit_table_container = ft.Column(spacing=6)
     entity_filter_picker = ft.Dropdown(
         label="Filter Entity Type",
@@ -4258,18 +4335,12 @@ def main(page: ft.Page):
         border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE), shadow=FieldFlowLightTheme.get_card_shadow(), expand=True
     )
 
-    # =========================================================================
-    # --- MASTER CATALOG TAB WIDGET ---
-    # =========================================================================
     master_catalog_view = build_master_data_management_view(
         page=page,
         get_tech_options_fn=get_tech_options,
         on_success_callback=lambda payload: execute_live_search(None)
     )
 
-    # =========================================================================
-    # --- TAB MANAGER ASSEMBLY (EXACT SPECIFIED TAB ORDER) ---
-    # =========================================================================
     tab_manager = ft.Tabs(
         selected_index=0,
         tabs=[
@@ -4284,16 +4355,12 @@ def main(page: ft.Page):
 
     page.add(ft.Column([top_search_bar, tab_manager], expand=True, spacing=8))
     
-    # Initial Data Feed Load
     load_live_triage_feed()
     refresh_calendar_fn()
     execute_live_search(None)
     refresh_audit_trail_table()
     refresh_users_list()
 
-    # =========================================================================
-    # --- AUTOMATIC BACKGROUND REFRESH WORKER ---
-    # =========================================================================
     def auto_refresh_worker():
         while True:
             time.sleep(5)
@@ -4676,7 +4743,8 @@ FILE: src\frontend\cards_component.py
 """
 src/frontend/cards_component.py
 Consolidated card rendering module for FieldFlow using standardized key names,
-legacy fallback chains, project photo rendering, and uniform FieldFlowLightTheme styling.
+project photo rendering, Company Project Manager integration, uniform FieldFlowLightTheme styling,
+and sanitized Drive space IDs for prefilling service requests.
 """
 
 import os
@@ -4816,73 +4884,67 @@ def build_project_card(
 ) -> ft.Card:
     """
     Renders a project card container for Projects Registry in Grid or List mode.
-    Fully integrated with build_project_image_control for photo rendering.
+    Directly consumes canonical keys for Contractor, Company PM, and Sales Rep.
     """
     if isinstance(project_data, dict):
         job_num = project_data.get("tbc_job_number", "123456XX")
         name = project_data.get("project_name", "Service Project")
         st1 = project_data.get("street_address_1", "")
-        st2 = project_data.get("street_address_2", "")
         c_city = project_data.get("city", "")
         c_state = project_data.get("state", "")
-        c_zip = project_data.get("postal_code", "")
-        c_country = project_data.get("country", "US")
 
-        address = (
-            f"{st1}, {c_city}, {c_state}".strip(", ")
-        ) or project_data.get("site_address") or project_data.get("site_name") or "Pending Address"
+        address = f"{st1}, {c_city}, {c_state}".strip(", ") if st1 else project_data.get("site_name", "Pending Address")
 
-        client = project_data.get("contractor_company_name") or project_data.get("contractor_name") or project_data.get("company_name") or "Partner"
-        site_name = project_data.get("site_name") or name
-        drive_id = project_data.get("drive_id") or f"FLD-DRIVE-{job_num}"
+        client = project_data.get("contractor_company_name", "Partner")
+        acct_no = project_data.get("tbco_account_number", "N/A")
+        site_name = project_data.get("site_name", name)
+        
+        # Bottom-Up Fix: Sanitize drive_id so None, empty strings, or placeholder defaults resolve cleanly
+        raw_drive_id = project_data.get("drive_id")
+        if not raw_drive_id or str(raw_drive_id).strip() in ["", "None", "FLD-0", "FLD-DRIVE-123456XX"]:
+            drive_id = f"FLD-GDRV-{job_num}"
+        else:
+            drive_id = str(raw_drive_id).strip()
+
         photo_url = project_data.get("photo_url", "")
 
-        cnt_f = project_data.get("project_site_contact_first_name") or project_data.get("pm_first_name") or project_data.get("first_name", "")
-        cnt_l = project_data.get("project_site_contact_last_name") or project_data.get("pm_last_name") or project_data.get("last_name", "")
-        cnt_em = project_data.get("project_site_contact_email") or project_data.get("pm_email") or project_data.get("email", "")
-        cnt_ph = project_data.get("project_site_contact_phone") or project_data.get("pm_phone") or project_data.get("phone", "")
-    elif isinstance(project_data, (tuple, list)):
-        job_num = project_data[0] if len(project_data) > 0 else "123456XX"
-        name = project_data[1] if len(project_data) > 1 else "Project"
-        address = project_data[2] if len(project_data) > 2 else "Pending Address"
-        client = project_data[3] if len(project_data) > 3 else "Partner"
-        drive_id = project_data[4] if len(project_data) > 4 else f"FLD-DRIVE-{job_num}"
-        photo_url = project_data[5] if len(project_data) > 5 else ""
-        st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "US"
-        site_name = name
-        cnt_f, cnt_l, cnt_em, cnt_ph = "", "", "", ""
-    else:
-        job_num, name, address, client, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "FLD-0", ""
-        st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "US"
-        site_name = name
-        cnt_f, cnt_l, cnt_em, cnt_ph = "", "", "", ""
+        pm_f = project_data.get("pm_first_name", "")
+        pm_l = project_data.get("pm_last_name", "")
+        pm_em = project_data.get("pm_email", "")
+        pm_ph = project_data.get("pm_phone", "")
 
-    # Standardized pre-fill payload dictionary for Service Requests
+        sales_em = project_data.get("sales_rep_email", "")
+        sales_ph = project_data.get("sales_rep_phone", "")
+        team_code = project_data.get("team_code", "")
+    else:
+        job_num, name, address, client, acct_no, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "N/A", "FLD-GDRV-123456XX", ""
+        st1, c_city, c_state = "", "", ""
+        site_name = name
+        pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
+        sales_em, sales_ph, team_code = "", "", ""
+
+    pm_full_name = f"{pm_f} {pm_l}".strip() or "Unassigned PM"
+
     prefill_payload = {
         "tbc_job_number": job_num,
         "project_name": name,
         "contractor_company_name": client,
+        "tbco_account_number": acct_no,
         "site_name": site_name,
         "street_address_1": st1,
-        "street_address_2": st2,
         "city": c_city,
         "state": c_state,
-        "postal_code": c_zip,
-        "country": c_country,
-        "project_site_contact_first_name": cnt_f,
-        "project_site_contact_last_name": cnt_l,
-        "project_site_contact_email": cnt_em,
-        "project_site_contact_phone": cnt_ph,
-        "sales_rep_first_name": project_data.get("sales_rep_first_name", "") if isinstance(project_data, dict) else "",
-        "sales_rep_last_name": project_data.get("sales_rep_last_name", "") if isinstance(project_data, dict) else "",
-        "sales_rep_email": project_data.get("sales_rep_email", "") if isinstance(project_data, dict) else "",
-        "sales_rep_phone": project_data.get("sales_rep_phone", "") if isinstance(project_data, dict) else "",
-        "team_code": project_data.get("team_code", "") if isinstance(project_data, dict) else "",
-        "drive_id": drive_id,
+        "pm_first_name": pm_f,
+        "pm_last_name": pm_l,
+        "pm_email": pm_em,
+        "pm_phone": pm_ph,
+        "sales_rep_email": sales_em,
+        "sales_rep_phone": sales_ph,
+        "team_code": team_code,
+        "drive_id": drive_id,  # Guaranteed non-empty Project space string
         "photo_url": photo_url
     }
 
-    # Isolated event handlers
     def handle_service_request_click(e):
         if on_service_request_action:
             on_service_request_action(prefill_payload)
@@ -4905,18 +4967,37 @@ def build_project_card(
                 width=350,
                 border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
                 shadow=FieldFlowLightTheme.get_card_shadow(),
-                # REMOVED container on_click/ink so clicking background does not open edit modal
                 content=ft.Column(
                     [
                         img_control,
                         ft.Row(
                             [
                                 ft.Text(f"Job #{job_num}", size=16, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
+                                ft.Container(
+                                    content=ft.Text(f"Acct: {acct_no}", size=10, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE),
+                                    bgcolor=FieldFlowLightTheme.BG_BLUE_TINT,
+                                    padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                                    border_radius=4
+                                )
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN
                         ),
                         ft.Text(client, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=14),
                         ft.Text(f"{name} ({address})", size=12, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True),
+                        ft.Row(
+                            [
+                                ft.Icon(ft.icons.PERSON_OUTLINE, size=14, color=FieldFlowLightTheme.ACCENT_BLUE),
+                                build_truncating_text(f"PM: {pm_full_name}" + (f" ({pm_em})" if pm_em else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
+                            ],
+                            spacing=4
+                        ),
+                        ft.Row(
+                            [
+                                ft.Icon(ft.icons.BADGE_OUTLINED, size=14, color=FieldFlowLightTheme.PINK_PRIMARY),
+                                build_truncating_text(f"Sales: {sales_em or 'N/A'}" + (f" [{team_code}]" if team_code else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
+                            ],
+                            spacing=4
+                        ),
                         ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
                         ft.Row(
                             [
@@ -4963,7 +5044,6 @@ def build_project_card(
                 width=1180,
                 border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
                 shadow=FieldFlowLightTheme.get_card_shadow(),
-                # REMOVED container on_click/ink so clicking background does not open edit modal
                 content=ft.Row(
                     [
                         small_img,
@@ -4976,7 +5056,7 @@ def build_project_card(
                                     ],
                                     spacing=10
                                 ),
-                                ft.Text(f"Client: {client}   |   {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True)
+                                ft.Text(f"Client: {client} ({acct_no})   |   PM: {pm_full_name} ({pm_em or 'N/A'})   |   {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True)
                             ],
                             spacing=2,
                             expand=True
@@ -5027,25 +5107,16 @@ def build_standard_ticket_card(
     on_drive_action=None,
     page: ft.Page = None
 ) -> ft.Container:
-    """Renders ticket cards reading directly from standardized key names with legacy fallbacks."""
+    """Renders ticket cards consuming canonical key names directly."""
     
-    # 1. Job & Client
-    job_num = record_data.get("tbc_job_number") or "123456XX"
-    contractor = (
-        record_data.get("contractor_company_name")
-        or record_data.get("company_name")
-        or record_data.get("contractor_name")
-        or "Unspecified Client"
-    )
-    
-    # 2. Campus & Project Name
-    site_campus = record_data.get("site_name") or "Site Campus"
-    project_name = record_data.get("project_name") or "Service Request"
+    job_num = record_data.get("tbc_job_number", "123456XX")
+    contractor = record_data.get("contractor_company_name", "Unspecified Client")
+    site_campus = record_data.get("site_name", "Site Campus")
+    project_name = record_data.get("project_name", "Service Request")
 
-    # 3. Address Components
-    street = record_data.get("street_address_1") or record_data.get("project_site_address") or record_data.get("site_address") or ""
-    city = record_data.get("city") or ""
-    state = record_data.get("state") or ""
+    street = record_data.get("street_address_1", "")
+    city = record_data.get("city", "")
+    state = record_data.get("state", "")
     
     if street and city and state:
         address_display = f"{street}, {city}, {state}"
@@ -5056,15 +5127,13 @@ def build_standard_ticket_card(
     else:
         address_display = "Pending Address"
 
-    # 4. Description & Status
-    description = record_data.get("issue_description") or record_data.get("request_type") or "Service Call"
-    status = record_data.get("triage_status") or record_data.get("status") or "Unassigned"
-    req_id = record_data.get("request_id") or "REQ-NEW"
+    description = record_data.get("issue_description", "Service Call")
+    status = record_data.get("triage_status", record_data.get("status", "Unassigned"))
+    req_id = record_data.get("request_id", "REQ-NEW")
 
-    # 5. Sales Rep Concatenation
-    sales_f = str(record_data.get("sales_rep_first_name") or "").strip()
-    sales_l = str(record_data.get("sales_rep_last_name") or "").strip()
-    sales_email = record_data.get("sales_rep_email") or record_data.get("requestor_email") or ""
+    sales_f = str(record_data.get("sales_first_name") or "").strip()
+    sales_l = str(record_data.get("sales_last_name") or "").strip()
+    sales_email = record_data.get("sales_rep_email", "")
     
     if sales_f or sales_l:
         sales_full_name = f"{sales_f} {sales_l}".strip()
@@ -5073,15 +5142,14 @@ def build_standard_ticket_card(
     else:
         sales_full_name = "Unassigned Sales Rep"
 
-    # 6. Site Contact Concatenation
     cnt_f = str(record_data.get("project_site_contact_first_name") or "").strip()
     cnt_l = str(record_data.get("project_site_contact_last_name") or "").strip()
-    cnt_phone = record_data.get("project_site_contact_phone") or record_data.get("contact_phone") or "N/A"
+    cnt_phone = record_data.get("project_site_contact_phone", "N/A")
     
     if cnt_f or cnt_l:
         cnt_full_name = f"{cnt_f} {cnt_l}".strip()
     else:
-        cnt_full_name = record_data.get("project_site_contact_name") or "Site Contact (N/A)"
+        cnt_full_name = "Site Contact (N/A)"
 
     badge_bg, badge_color = FieldFlowLightTheme.resolve_status_badge_colors(status)
 
@@ -5098,7 +5166,6 @@ def build_standard_ticket_card(
 
     footer_ref = ft.Text(f"Tracking Ref: {req_id}", size=10, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
 
-    # Context-Specific Dispatch Control Assembly (Prevents Vertical Flex Overlap)
     action_controls = []
     if card_context == "triage" and card_tech_dropdown and card_date_input and card_date_btn:
         tech_wrapper = ft.Container(content=card_tech_dropdown, padding=ft.padding.only(top=4, bottom=4))
@@ -5149,9 +5216,9 @@ def build_standard_ticket_card(
 # =========================================================================
 
 def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_action=None) -> ft.Container:
-    name = str(asset_data.get("asset_name") or "Site Equipment")
-    model = str(asset_data.get("model_number") or "N/A")
-    serial = str(asset_data.get("serial_number") or "N/A")
+    name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name", "Site Equipment"))
+    model = str(asset_data.get("model_number", "N/A"))
+    serial = str(asset_data.get("serial_number", "N/A"))
 
     badge_bg, badge_color = FieldFlowLightTheme.resolve_status_badge_colors("Completed" if is_serviced else "Unassigned")
 
@@ -5175,9 +5242,9 @@ def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_
 
 
 def build_visit_history_card(visit_data: dict, on_click_action=None) -> ft.Container:
-    v_date = str(visit_data.get("scheduled_time") or "Past Date")
-    v_tech = str(visit_data.get("technician_email") or "Tech Unassigned")
-    v_status = str(visit_data.get("completion_status") or "Completed")
+    v_date = str(visit_data.get("scheduled_time", "Past Date"))
+    v_tech = str(visit_data.get("technician_email", "Tech Unassigned"))
+    v_status = str(visit_data.get("status", "Completed"))
 
     v_badge_bg, v_badge_color = FieldFlowLightTheme.resolve_status_badge_colors(v_status)
 
@@ -5557,7 +5624,8 @@ from src.backend.db_manager import (
     db as firestore_db,
     resolve_location,
     resolve_contractor,
-    resolve_pm_contact
+    resolve_pm_contact,
+    resolve_sales_user
 )
 from src.frontend.shared_utils import find_any_local_logo, get_base64_from_file, show_toast
 
@@ -5569,7 +5637,6 @@ VALID_TEAM_CODES = [
 
 
 def build_image_control(photo_url_or_path: str, height: int = 180) -> ft.Control:
-    """Renders network images, local disk images, or styled fallback brand containers."""
     val = (photo_url_or_path or "").strip()
     if val.startswith("http://") or val.startswith("https://"):
         return ft.Image(src=val, height=height, fit=ft.ImageFit.COVER, border_radius=6)
@@ -5609,7 +5676,6 @@ def build_project_detail_modal(
     on_save_callback=None,
     on_delete_callback=None
 ):
-    """Builds and manages the project detail modal dialog."""
     active_project_state = {"tbc_job_number": None, "drive_id": None}
 
     def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):
@@ -5618,7 +5684,6 @@ def build_project_detail_modal(
             padding=ft.padding.only(top=8, bottom=2)
         )
 
-    # 1. Project Core Vitals Fields
     edit_project_job_num = ft.TextField(label="TBCo Job #*", read_only=True, border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_project_name = ft.TextField(label="Project Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_stage = ft.Dropdown(
@@ -5635,11 +5700,9 @@ def build_project_detail_modal(
     )
     edit_drive_id = ft.TextField(label="Google Drive Folder ID", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 2. Contractor & Client Details Fields
     edit_company_name = ft.TextField(label="Contractor / Client Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_company_acct = ft.TextField(label="Company Account #", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 3. Site Location & Address Fields
     edit_site_name = ft.TextField(label="Campus / Site Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_street_1 = ft.TextField(label="Street Address 1*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_street_2 = ft.TextField(label="Street Address 2 / Unit", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
@@ -5648,13 +5711,11 @@ def build_project_detail_modal(
     edit_postal_code = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 4. Project Site Contact Details Fields
     edit_pm_first_name = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_pm_last_name = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_pm_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_pm_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 5. Media & File Staging Controls
     staged_photo_path = {"value": ""}
     staged_documents = []
 
@@ -5709,16 +5770,6 @@ def build_project_detail_modal(
             pm_ph = proj_data.get("pm_phone") or proj_data.get("phone", "")
             
             photo_val = proj_data.get("photo_url", "")
-        elif isinstance(proj_data, (tuple, list)):
-            job_num = proj_data[0] if len(proj_data) > 0 else ""
-            proj_name = proj_data[1] if len(proj_data) > 1 else ""
-            s_name = proj_data[2] if len(proj_data) > 2 else ""
-            client = proj_data[3] if len(proj_data) > 3 else ""
-            drive_val = proj_data[4] if len(proj_data) > 4 else ""
-            stage_val = proj_data[5] if len(proj_data) > 5 else "In Progress"
-            photo_val = proj_data[6] if len(proj_data) > 6 else ""
-            acct_num, st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "", "US"
-            pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
         else:
             return
 
@@ -5755,7 +5806,6 @@ def build_project_detail_modal(
 
     def save_project_detail_edits(e):
         if not edit_project_job_num.value or not edit_project_name.value or not edit_company_name.value or not edit_site_name.value or not edit_street_1.value or not edit_city.value or not edit_state.value:
-            # FIX: Use show_toast directly with page parameter
             show_toast(page, "Job #, Project Name, Contractor, Site Name, Street, City, and State are required!", kind="error")
             return
 
@@ -5780,7 +5830,6 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
-        # Step A: Resolve Normalized Relations
         clean_site = resolve_location(site_name, street_1, street_2, city_val, state_val, postal_val, country_val)
         clean_acct = resolve_contractor(company_acct, company_name)
         clean_pm_id = None
@@ -5810,7 +5859,6 @@ def build_project_detail_modal(
             "photo_url": staged_photo_path["value"]
         }
 
-        # Step B: SQLite Save Persistence
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -5824,14 +5872,12 @@ def build_project_detail_modal(
         except Exception as sql_err:
             logging.error(f"SQLite project update error: {sql_err}")
 
-        # Step C: Cloud Firestore Dual-Layer Persistence
         if firestore_db is not None:
             try:
                 firestore_db.collection("projects").document(job_num).set(updated_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore project update error: {fs_err}")
 
-        # FIX: Use show_toast directly with page parameter
         show_toast(page, f"🎉 Project #{job_num} Master Record Saved!", kind="success")
         project_detail_modal_dialog.open = False
         page.update()
@@ -5888,7 +5934,7 @@ def build_ticket_detail_modal(
     trigger_date_picker_fn,
     on_save_callback=None
 ):
-    """Editable Service Ticket Detail Modal using standardized dictionary key names."""
+    """Editable Service Ticket Detail Modal using normalized schema and sales user lookups."""
     active_ticket_state = {"request_id": None, "tbc_job_number": None}
 
     def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):
@@ -5897,20 +5943,17 @@ def build_ticket_detail_modal(
             padding=ft.padding.only(top=8, bottom=2)
         )
 
-    # 1. Sales Rep Details Fields
     dt_sales_first_name = ft.TextField(label="Sales Rep First Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_sales_last_name = ft.TextField(label="Sales Rep Last Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_sales_email = ft.TextField(label="Sales Rep Email*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_sales_phone = ft.TextField(label="Sales Rep Phone", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_team_code = ft.Dropdown(label="Team Code*", options=[ft.dropdown.Option(code) for code in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 2. Job & Site Details Fields
     dt_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_company_name = ft.TextField(label="Contractor / Client Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_site_name = ft.TextField(label="Campus / Site Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_project_name = ft.TextField(label="Project Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 3. Address Details Fields
     dt_street_1 = ft.TextField(label="Street Address 1*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_street_2 = ft.TextField(label="Street Address 2 / Unit", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_city = ft.TextField(label="City*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
@@ -5918,7 +5961,6 @@ def build_ticket_detail_modal(
     dt_postal_code = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 4. Service Description & Request Type
     dt_request_type = ft.Dropdown(
         label="Request Type*",
         options=[
@@ -5931,13 +5973,11 @@ def build_ticket_detail_modal(
     )
     dt_issue = ft.TextField(label="Issue Description*", multiline=True, min_lines=2, max_lines=4, border_color=FieldFlowLightTheme.BORDER_PINK_EDGE)
 
-    # 5. Site Contact Details Fields
     dt_contact_first_name = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_contact_last_name = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_contact_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_contact_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    # 6. Dispatch Status Controls
     dt_tech_select = ft.Dropdown(label="Assigned Tech Email", options=get_tech_options_fn(), border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_date_select = ft.TextField(label="Scheduled Date", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     dt_status_select = ft.Dropdown(
@@ -5952,15 +5992,28 @@ def build_ticket_detail_modal(
     )
 
     def populate_ticket_data(req_data: dict, dispatch_data: dict = None):
-        """Populates modal fields using direct standardized dictionary keys."""
+        """Populates modal fields looking up sales user details directly from users table."""
         active_ticket_state["request_id"] = req_data.get("request_id")
         active_ticket_state["tbc_job_number"] = req_data.get("tbc_job_number") or ""
 
-        dt_sales_first_name.value = req_data.get("sales_rep_first_name") or ""
-        dt_sales_last_name.value = req_data.get("sales_rep_last_name") or ""
-        dt_sales_email.value = req_data.get("sales_rep_email") or ""
+        sales_email_val = req_data.get("sales_rep_email") or ""
+        dt_sales_email.value = sales_email_val
         dt_sales_phone.value = req_data.get("sales_rep_phone") or ""
         dt_team_code.value = req_data.get("team_code") or None
+
+        if sales_email_val:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT first_name, last_name, user_phone FROM users WHERE LOWER(user_email) = ?", (sales_email_val.lower(),))
+                    row = cursor.fetchone()
+                    if row:
+                        dt_sales_first_name.value = row["first_name"] or ""
+                        dt_sales_last_name.value = row["last_name"] or ""
+                        if not dt_sales_phone.value:
+                            dt_sales_phone.value = row["user_phone"] or ""
+            except Exception as err:
+                logging.warning(f"Error fetching sales rep details for modal: {err}")
 
         dt_job_num.value = req_data.get("tbc_job_number") or ""
         dt_company_name.value = req_data.get("contractor_company_name") or ""
@@ -5989,13 +6042,21 @@ def build_ticket_detail_modal(
             dt_date_select.value = dispatch_data.get("scheduled_time") or datetime.now().strftime("%Y-%m-%d")
 
     def save_ticket_detail_edits(e):
-        """Saves modal changes into SQLite and Firestore using standardized dictionary keys."""
         if not dt_job_num.value or not dt_site_name.value or not dt_street_1.value or not dt_city.value or not dt_state.value:
             show_toast(page, "Job #, Campus Name, Street, City, and State are required!", kind="error")
             return
 
         req_id = active_ticket_state["request_id"]
         job_num = dt_job_num.value.strip().upper()
+        sales_email = dt_sales_email.value.strip().lower() if dt_sales_email.value else ""
+
+        if sales_email:
+            resolve_sales_user(
+                user_email=sales_email,
+                first_name=dt_sales_first_name.value.strip() if dt_sales_first_name.value else "",
+                last_name=dt_sales_last_name.value.strip() if dt_sales_last_name.value else "",
+                user_phone=dt_sales_phone.value.strip() if dt_sales_phone.value else ""
+            )
 
         updated_payload = {
             "request_id": req_id,
@@ -6010,9 +6071,7 @@ def build_ticket_detail_modal(
             "state": dt_state.value.strip(),
             "postal_code": dt_postal_code.value.strip() if dt_postal_code.value else "",
             "country": dt_country.value.strip() if dt_country.value else "US",
-            "sales_rep_first_name": dt_sales_first_name.value.strip() if dt_sales_first_name.value else "",
-            "sales_rep_last_name": dt_sales_last_name.value.strip() if dt_sales_last_name.value else "",
-            "sales_rep_email": dt_sales_email.value.strip() if dt_sales_email.value else "",
+            "sales_rep_email": sales_email,
             "sales_rep_phone": dt_sales_phone.value.strip() if dt_sales_phone.value else "",
             "project_site_contact_first_name": dt_contact_first_name.value.strip() if dt_contact_first_name.value else "",
             "project_site_contact_last_name": dt_contact_last_name.value.strip() if dt_contact_last_name.value else "",
@@ -6023,7 +6082,6 @@ def build_ticket_detail_modal(
             "request_type": dt_request_type.value or "VFD Startup"
         }
 
-        # 1. Update SQLite 'intake_requests'
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -6031,29 +6089,28 @@ def build_ticket_detail_modal(
                     UPDATE intake_requests
                     SET tbc_job_number = ?, team_code = ?, site_name = ?, project_name = ?,
                         contractor_company_name = ?, street_address_1 = ?, street_address_2 = ?,
-                        city = ?, state = ?, postal_code = ?, country = ?, sales_rep_first_name = ?,
-                        sales_rep_last_name = ?, sales_rep_email = ?, sales_rep_phone = ?,
-                        project_site_contact_first_name = ?, project_site_contact_last_name = ?,
-                        project_site_contact_email = ?, project_site_contact_phone = ?,
-                        issue_description = ?, triage_status = ?, request_type = ?
+                        city = ?, state = ?, postal_code = ?, country = ?, sales_rep_email = ?,
+                        sales_rep_phone = ?, project_site_contact_first_name = ?,
+                        project_site_contact_last_name = ?, project_site_contact_email = ?,
+                        project_site_contact_phone = ?, issue_description = ?,
+                        triage_status = ?, request_type = ?
                     WHERE request_id = ?
                 """, (
                     job_num, updated_payload["team_code"], updated_payload["site_name"], updated_payload["project_name"],
                     updated_payload["contractor_company_name"], updated_payload["street_address_1"], updated_payload["street_address_2"],
                     updated_payload["city"], updated_payload["state"], updated_payload["postal_code"], updated_payload["country"],
-                    updated_payload["sales_rep_first_name"], updated_payload["sales_rep_last_name"], updated_payload["sales_rep_email"],
-                    updated_payload["sales_rep_phone"], updated_payload["project_site_contact_first_name"], updated_payload["project_site_contact_last_name"],
-                    updated_payload["project_site_contact_email"], updated_payload["project_site_contact_phone"], updated_payload["issue_description"],
+                    updated_payload["sales_rep_email"], updated_payload["sales_rep_phone"], updated_payload["project_site_contact_first_name"],
+                    updated_payload["project_site_contact_last_name"], updated_payload["project_site_contact_email"],
+                    updated_payload["project_site_contact_phone"], updated_payload["issue_description"],
                     updated_payload["triage_status"], updated_payload["request_type"], req_id
                 ))
                 conn.commit()
         except Exception as sql_err:
             logging.error(f"SQLite update error: {sql_err}")
 
-        # 2. Update Cloud Firestore 'intake_ledger'
         if firestore_db is not None:
             try:
-                firestore_db.collection("intake_ledger").document(req_id).set(updated_payload, merge=True)
+                firestore_db.collection("intake_requests").document(req_id).set(updated_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore update error: {fs_err}")
 
@@ -6085,7 +6142,7 @@ def build_ticket_detail_modal(
                 ft.Row([dt_city, dt_state, dt_postal_code, dt_country], spacing=8),
 
                 build_section_header("4. Service Description"),
-                ft.Row([dt_request_type]),  # WRAPPED IN ROW: Prevents vertical overlap
+                ft.Row([dt_request_type]),
                 dt_issue,
 
                 build_section_header("5. Project Site Contact"),
@@ -6094,7 +6151,7 @@ def build_ticket_detail_modal(
 
                 build_section_header("6. Dispatch Allocation", color_token=FieldFlowLightTheme.PRIMARY_GREEN),
                 ft.Row([dt_tech_select, dt_date_select], spacing=8),
-                ft.Row([dt_status_select])  # WRAPPED IN ROW: Prevents vertical overlap
+                ft.Row([dt_status_select])
             ], spacing=10, scroll=ft.ScrollMode.ALWAYS),
             width=760, height=580, padding=ft.padding.only(left=12, right=20, top=10, bottom=10)
         ),
@@ -6296,7 +6353,8 @@ FILE: src\frontend\forms_component.py
 
 """
 src/frontend/forms_component.py
-Consolidated data entry and intake form module for FieldFlow using standardized key names.
+Consolidated data entry and intake form module for FieldFlow using standardized key names,
+reordered search-first fields, auto-fill blur handlers, and Company Project Manager integration.
 """
 
 import os
@@ -6317,7 +6375,8 @@ from src.backend.db_manager import (
     db as firestore_db, 
     resolve_location, 
     resolve_contractor,
-    resolve_sales_user
+    resolve_sales_user,
+    resolve_pm_contact
 )
 from src.backend.drive_service import ensure_project_drive_folder
 from src.frontend.shared_utils import find_any_local_logo, show_toast
@@ -6332,6 +6391,7 @@ VALID_TEAM_CODES = [
 
 
 def make_field(label_text: str, input_control: ft.Control, expand: bool = True) -> ft.Container:
+    """Helper utility to wrap Flet controls with standardized accent titles."""
     return ft.Container(
         content=ft.Column([
             ft.Text(label_text, size=11, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE),
@@ -6342,10 +6402,83 @@ def make_field(label_text: str, input_control: ft.Control, expand: bool = True) 
 
 
 # =========================================================================
+# SHARED SEARCH & AUTO-FILL LOOKUP HELPERS
+# =========================================================================
+
+def on_contractor_blur_helper(tf_company: ft.TextField, tf_company_acct: ft.TextField, page: ft.Page):
+    """
+    Search & Auto-Fill Handler for Contractor fields.
+    Queries local SQLite and Cloud Firestore by Account # or Company Name.
+    """
+    clean_company = tf_company.value.strip() if tf_company.value else ""
+    clean_acct = tf_company_acct.value.strip().upper() if tf_company_acct.value else ""
+
+    if not clean_company and not clean_acct:
+        return
+
+    found_acct = None
+    found_name = None
+
+    # Step 1: Query local SQLite contractors table
+    try:
+        with local_db.get_connection() as conn:
+            cursor = conn.cursor()
+            if clean_acct:
+                cursor.execute(
+                    "SELECT tbco_account_number, company_name FROM contractors WHERE tbco_account_number = ?", 
+                    (clean_acct,)
+                )
+            else:
+                cursor.execute(
+                    "SELECT tbco_account_number, company_name FROM contractors WHERE LOWER(company_name) LIKE ? LIMIT 1", 
+                    (f"%{clean_company.lower()}%",)
+                )
+            row = cursor.fetchone()
+            if row:
+                found_acct = row["tbco_account_number"]
+                found_name = row["company_name"]
+    except Exception as err:
+        logging.warning(f"Local contractor lookup error: {err}")
+
+    # Step 2: Query Cloud Firestore if not found locally
+    if not found_acct and firestore_db is not None:
+        try:
+            if clean_acct:
+                doc = firestore_db.collection("contractors").document(clean_acct).get()
+                if doc.exists:
+                    data = doc.to_dict()
+                    found_acct = data.get("tbco_account_number", clean_acct)
+                    found_name = data.get("company_name", "")
+            else:
+                query = firestore_db.collection("contractors").stream()
+                for doc in query:
+                    data = doc.to_dict()
+                    comp_name = data.get("company_name", "")
+                    if clean_company.lower() in comp_name.lower():
+                        found_acct = doc.id or data.get("tbco_account_number", "")
+                        found_name = comp_name
+                        break
+        except Exception as err:
+            logging.warning(f"Cloud contractor lookup error: {err}")
+
+    # Step 3: Populate matched values and update UI
+    if found_acct or found_name:
+        if found_acct:
+            tf_company_acct.value = found_acct
+        if found_name:
+            tf_company.value = found_name
+        show_toast(page, f"Loaded Contractor: {found_name or found_acct}", kind="info")
+        if page:
+            page.update()
+
+
+# =========================================================================
 # 1. PROJECT CREATION FORM COMPONENT
 # =========================================================================
 
 def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:
+    """Project Creation Form with search-first field ordering and Company PM integration."""
+    
     # 1. Core Project Controls
     tf_job_num = ft.TextField(label="TBCo Job #*", hint_text="e.g. 287027TI", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -6361,18 +6494,37 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     tf_postal_code = ft.TextField(label="Postal Code*", hint_text="e.g. 33602", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    tf_company = ft.TextField(label="Contractor Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_company_acct = ft.TextField(label="Company Account #", hint_text="e.g. ACME-0091", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    # 3. Contractor Search Controls
+    contractor_instructions_note = ft.Text(
+        "Search existing contractor by Account # or Company Name to auto-fill contractor details below.",
+        size=11,
+        color=FieldFlowLightTheme.TEXT_MUTED
+    )
 
-    # 3. Project Site Contact Controls
-    tf_contact_first = ft.TextField(label="Site Contact First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_last = ft.TextField(label="Site Contact Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_email = ft.TextField(label="Site Contact Email", hint_text="e.g. asmith@site.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_contact_phone = ft.TextField(label="Site Contact Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_company = ft.TextField(
+        label="Contractor Company Name*", 
+        hint_text="e.g. Acme Mechanical", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
+    tf_company_acct = ft.TextField(
+        label="Contractor Account #", 
+        hint_text="e.g. ACME-0091", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
 
-    # 4. Sales Rep Controls (Re-ordered: Email First + On Blur Handler)
+    # 4. Company Project Manager Controls
+    tf_pm_first = ft.TextField(label="Company Project Manager First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_last = ft.TextField(label="Company Project Manager Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_email = ft.TextField(label="Company Project Manager Email", hint_text="e.g. asmith@acme.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_phone = ft.TextField(label="Company Project Manager Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+
+    # 5. Sales Rep Search Controls
     sales_instructions_note = ft.Text(
-        "Enter Sales Rep Email first to auto-fill details from Cloud Firestore, or type new details below to register a sales user.",
+        "Enter Sales Rep Email first to auto-fill details from database, or type new details below.",
         size=11,
         color=FieldFlowLightTheme.TEXT_MUTED
     )
@@ -6389,7 +6541,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
         user_found = False
 
-        # Step A: Primary Lookup in Cloud Firestore
         if firestore_db is not None:
             try:
                 doc = firestore_db.collection("users").document(clean_email).get()
@@ -6403,7 +6554,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             except Exception as err:
                 logging.warning(f"Cloud sales user lookup error: {err}")
 
-        # Step B: Offline Fallback Lookup in Local SQLite
         if not user_found:
             try:
                 with local_db.get_connection() as conn:
@@ -6420,20 +6570,20 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
                 logging.warning(f"Local sales user lookup error: {err}")
 
         if not user_found:
-            show_toast(page, "New Sales Rep email. Please enter name and phone details below.", kind="info")
+            show_toast(page, "New Sales Rep email. Enter details below to register user.", kind="info")
 
         if page:
             page.update()
 
     tf_sales_email = ft.TextField(
-        label="Sales Rep Email",
+        label="Sales Rep Email*",
         hint_text="e.g. jdoe@tombarrow.com",
         border_color=FieldFlowLightTheme.ACCENT_BLUE,
         expand=True,
         on_blur=on_sales_email_blur
     )
 
-    # 5. File Upload Controls & Status
+    # 6. File Upload Controls & Status
     staged_photo_path = {"value": ""}
     staged_documents = []
 
@@ -6487,10 +6637,10 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         tf_postal_code.value = ""
         tf_country.value = "US"
 
-        tf_contact_first.value = ""
-        tf_contact_last.value = ""
-        tf_contact_email.value = ""
-        tf_contact_phone.value = ""
+        tf_pm_first.value = ""
+        tf_pm_last.value = ""
+        tf_pm_email.value = ""
+        tf_pm_phone.value = ""
 
         tf_sales_email.value = ""
         tf_sales_first.value = ""
@@ -6526,19 +6676,34 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         zip_val = tf_postal_code.value.strip() if tf_postal_code.value else ""
         country_val = tf_country.value.strip() if tf_country.value else "US"
 
+        pm_first = tf_pm_first.value.strip() if tf_pm_first.value else ""
+        pm_last = tf_pm_last.value.strip() if tf_pm_last.value else ""
+        pm_email = tf_pm_email.value.strip().lower() if tf_pm_email.value else ""
+        pm_phone = tf_pm_phone.value.strip() if tf_pm_phone.value else ""
+
         clean_site = resolve_location(s_name, street_1, street_2, city_val, state_val, zip_val, country_val)
         clean_acct = resolve_contractor(acct_no, company)
 
-        # Auto-register sales user with role='Sales' in users table
+        clean_pm_id = None
+        if pm_email:
+            clean_pm_id = resolve_pm_contact(
+                tbco_account_number=clean_acct,
+                first_name=pm_first,
+                last_name=pm_last,
+                email=pm_email,
+                phone=pm_phone,
+                title="Project Manager"
+            )
+
         sales_email_val = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
         if sales_email_val:
             resolve_sales_user(
                 user_email=sales_email_val,
                 first_name=tf_sales_first.value.strip() if tf_sales_first.value else "",
-                last_name=tf_sales_last.value.strip() if tf_sales_last.value else ""
+                last_name=tf_sales_last.value.strip() if tf_sales_last.value else "",
+                user_phone=tf_sales_phone.value.strip() if tf_sales_phone.value else ""
             )
 
-        # Automatically Provision Google Drive Folder inside Shared Drive
         drive_info = ensure_project_drive_folder(
             job_number=job_num,
             project_name=p_name,
@@ -6548,13 +6713,12 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         )
         drive_id = drive_info.get("drive_id", f"FLD-GDRV-{job_num}")
 
-        # Complete Payload for Cloud Storage
         proj_payload = {
             "tbc_job_number": job_num,
             "site_name": clean_site,
             "tbco_account_number": clean_acct,
+            "pm_contact_id": clean_pm_id,
             "project_name": p_name,
-            "contractor_name": company,
             "contractor_company_name": company,
             "street_address_1": street_1,
             "street_address_2": street_2,
@@ -6562,12 +6726,10 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "state": state_val,
             "postal_code": zip_val,
             "country": country_val,
-            "project_site_contact_first_name": tf_contact_first.value.strip() if tf_contact_first.value else "",
-            "project_site_contact_last_name": tf_contact_last.value.strip() if tf_contact_last.value else "",
-            "project_site_contact_email": tf_contact_email.value.strip().lower() if tf_contact_email.value else "",
-            "project_site_contact_phone": tf_contact_phone.value.strip() if tf_contact_phone.value else "",
-            "sales_rep_first_name": tf_sales_first.value.strip() if tf_sales_first.value else "",
-            "sales_rep_last_name": tf_sales_last.value.strip() if tf_sales_last.value else "",
+            "pm_first_name": pm_first,
+            "pm_last_name": pm_last,
+            "pm_email": pm_email,
+            "pm_phone": pm_phone,
             "sales_rep_email": sales_email_val,
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "team_code": dd_team_code.value if dd_team_code.value else "",
@@ -6575,22 +6737,20 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "stage": "In Progress"
         }
 
-        # SQLite Insert matching STRICT 6-column schema
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
-                        tbc_job_number, site_name, tbco_account_number, project_name, drive_id, stage
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name, drive_id, stage
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    job_num, clean_site, clean_acct, p_name, drive_id, "In Progress"
+                    job_num, clean_site, clean_acct, clean_pm_id, p_name, drive_id, "In Progress"
                 ))
                 conn.commit()
         except Exception as sql_err:
             logging.error(f"SQLite project insert error: {sql_err}")
 
-        # Sync complete payload to Cloud Firestore
         if firestore_db is not None:
             try:
                 firestore_db.collection("projects").document(job_num).set(proj_payload, merge=True)
@@ -6603,20 +6763,33 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         if on_success_callback:
             on_success_callback(proj_payload)
 
+    # Form UI Layout Assembly
     form_container = ft.Container(
         content=ft.Column([
             ft.Row([tf_job_num, tf_proj_name], spacing=10),
             ft.Row([tf_site_name, tf_po_num], spacing=10),
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal_code, tf_country], spacing=8),
+            
+            # Contractor Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            contractor_instructions_note,
             ft.Row([tf_company, tf_company_acct], spacing=10),
-            ft.Row([tf_contact_first, tf_contact_last], spacing=10),
-            ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
+            
+            # Company PM Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            ft.Row([tf_pm_first, tf_pm_last], spacing=10),
+            ft.Row([tf_pm_email, tf_pm_phone], spacing=10),
+            
+            # Sales Rep Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             sales_instructions_note,
             ft.Row([tf_sales_email], spacing=10),
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
             ft.Row([tf_sales_phone, dd_team_code], spacing=10),
+            
+            # Media & Submittal
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([btn_upload_photo, photo_status_txt], spacing=10),
             ft.Row([btn_upload_docs, docs_status_txt], spacing=10),
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
@@ -6642,6 +6815,7 @@ def build_asset_registration_tool(
     show_toast_fn,
     page: ft.Page
 ) -> ft.Column:
+    """Asset registration wizard for searching and linking equipment tags."""
     tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
 
     search_input_field = ft.TextField(label="Search Equipment Serial Number...", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -6669,6 +6843,7 @@ def build_asset_registration_tool(
 # =========================================================================
 
 def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Control:
+    """Master Parts Catalog entry form."""
     tf_sku = ft.TextField(hint_text="e.g. SKU-VALVE-01", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_manufacturer = ft.TextField(hint_text="e.g. Honeywell", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_description = ft.TextField(hint_text="e.g. 2-Way Control Valve 24V", border_color=FieldFlowLightTheme.ACCENT_BLUE)
@@ -6698,6 +6873,7 @@ def build_parts_master_form(page: ft.Page, on_success_callback=None) -> ft.Contr
 
 
 def build_manufacturer_form(page: ft.Page, on_success_callback=None) -> ft.Control:
+    """Master Manufacturer entry form."""
     tf_mfr_id = ft.TextField(hint_text="e.g. MFR-HW", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_company = ft.TextField(hint_text="e.g. Honeywell", border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
@@ -6722,6 +6898,7 @@ def build_manufacturer_form(page: ft.Page, on_success_callback=None) -> ft.Contr
 
 
 def build_truck_form(page: ft.Page, get_tech_options_fn=None, on_success_callback=None) -> ft.Control:
+    """Fleet Truck entry form."""
     tf_truck_id = ft.TextField(hint_text="e.g. TRUCK-01", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     tf_plate = ft.TextField(hint_text="e.g. FL-88021", border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
@@ -6746,6 +6923,7 @@ def build_truck_form(page: ft.Page, get_tech_options_fn=None, on_success_callbac
 
 
 def build_master_forms(page: ft.Page, get_tech_options_fn=None, on_success_callback=None) -> ft.Control:
+    """Tabbed Master Data Catalog Container."""
     return ft.Tabs(
         selected_index=0,
         tabs=[
@@ -6766,16 +6944,98 @@ def build_service_intake_form(
     on_success_callback=None,
     get_tech_options_fn=None
 ) -> ft.Control:
-    """Form to submit new service intake requests using standardized field names across all layers."""
+    """Service Ticket Intake Form with search-first field ordering and Company PM integration."""
     
+    # 1. Sales Rep Search Controls
+    sales_instructions_note = ft.Text(
+        "Enter Sales Rep Email first to auto-fill details from database, or type new details below.",
+        size=11,
+        color=FieldFlowLightTheme.TEXT_MUTED
+    )
+
     tf_sales_first = ft.TextField(label="Sales Rep First Name*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_last = ft.TextField(label="Sales Rep Last Name*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_sales_email = ft.TextField(label="Sales Rep Email*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_sales_phone = ft.TextField(label="Sales Rep Phone", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     dd_team_code = ft.Dropdown(label="Team Code*", options=[ft.dropdown.Option(c) for c in VALID_TEAM_CODES], border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    def on_sales_email_blur(e):
+        clean_email = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
+        if not clean_email:
+            return
+
+        user_found = False
+
+        if firestore_db is not None:
+            try:
+                doc = firestore_db.collection("users").document(clean_email).get()
+                if doc.exists:
+                    user_data = doc.to_dict()
+                    tf_sales_first.value = user_data.get("first_name", "")
+                    tf_sales_last.value = user_data.get("last_name", "")
+                    tf_sales_phone.value = user_data.get("user_phone", "")
+                    user_found = True
+                    show_toast(page, "Loaded Sales Rep from Cloud Firestore.", kind="info")
+            except Exception as err:
+                logging.warning(f"Cloud sales user lookup error: {err}")
+
+        if not user_found:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT first_name, last_name, user_phone FROM users WHERE LOWER(user_email) = ?", (clean_email,))
+                    row = cursor.fetchone()
+                    if row:
+                        tf_sales_first.value = row["first_name"] or ""
+                        tf_sales_last.value = row["last_name"] or ""
+                        tf_sales_phone.value = row["user_phone"] or ""
+                        user_found = True
+                        show_toast(page, "Loaded Sales Rep from local database.", kind="info")
+            except Exception as err:
+                logging.warning(f"Local sales user lookup error: {err}")
+
+        if not user_found:
+            show_toast(page, "New Sales Rep email. Enter details below to register user.", kind="info")
+
+        if page:
+            page.update()
+
+    tf_sales_email = ft.TextField(
+        label="Sales Rep Email*", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=on_sales_email_blur
+    )
+
+    # 2. Contractor Search Controls
+    contractor_instructions_note = ft.Text(
+        "Search existing contractor by Account # or Company Name to auto-fill contractor details below.",
+        size=11,
+        color=FieldFlowLightTheme.TEXT_MUTED
+    )
+
+    tf_company = ft.TextField(
+        label="Contractor Company Name*", 
+        hint_text="e.g. Acme Mechanical", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
+    tf_company_acct = ft.TextField(
+        label="Contractor Account #", 
+        hint_text="e.g. ACME-0091", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=lambda e: on_contractor_blur_helper(tf_company, tf_company_acct, page)
+    )
+
+    # 3. Company Project Manager Controls
+    tf_pm_first = ft.TextField(label="Company Project Manager First Name", hint_text="e.g. Alex", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_last = ft.TextField(label="Company Project Manager Last Name", hint_text="e.g. Smith", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_email = ft.TextField(label="Company Project Manager Email", hint_text="e.g. asmith@acme.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    tf_pm_phone = ft.TextField(label="Company Project Manager Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+
+    # 4. Job & Location Controls
     tf_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
-    tf_company = ft.TextField(label="Contractor / Client Name*", hint_text="e.g. Acme Mechanical", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
@@ -6786,11 +7046,13 @@ def build_service_intake_form(
     tf_postal = ft.TextField(label="Postal Code*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_country = ft.TextField(label="Country", value="US", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    # 5. Project Site Contact Controls
     tf_contact_first = ft.TextField(label="Project Site Contact First Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_last = ft.TextField(label="Project Site Contact Last Name", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_contact_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
+    # 6. Service Request & Dispatch Controls
     dd_request_type = ft.Dropdown(
         label="Request Type*",
         options=[
@@ -6830,16 +7092,23 @@ def build_service_intake_form(
         if not isinstance(proj_data, dict):
             return
 
-        tf_sales_first.value = proj_data.get("sales_rep_first_name") or proj_data.get("sales_first_name", "")
-        tf_sales_last.value = proj_data.get("sales_rep_last_name") or proj_data.get("sales_last_name", "")
-        tf_sales_email.value = proj_data.get("sales_rep_email") or proj_data.get("sales_email", "")
-        tf_sales_phone.value = proj_data.get("sales_rep_phone") or proj_data.get("sales_phone", "")
-        dd_team_code.value = proj_data.get("team_code") or proj_data.get("sales_team", None)
+        sales_email_val = proj_data.get("sales_rep_email") or ""
+        tf_sales_email.value = sales_email_val
+        tf_sales_first.value = proj_data.get("sales_rep_first_name") or ""
+        tf_sales_last.value = proj_data.get("sales_rep_last_name") or ""
+        tf_sales_phone.value = proj_data.get("sales_rep_phone") or ""
+        dd_team_code.value = proj_data.get("team_code") or None
 
         tf_job_num.value = proj_data.get("tbc_job_number", "")
         tf_proj_name.value = proj_data.get("project_name", "")
-        tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("contractor_name") or proj_data.get("company_name", "")
+        tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("company_name", "")
+        tf_company_acct.value = proj_data.get("tbco_account_number") or ""
         tf_site_name.value = proj_data.get("site_name", "")
+
+        tf_pm_first.value = proj_data.get("pm_first_name") or ""
+        tf_pm_last.value = proj_data.get("pm_last_name") or ""
+        tf_pm_email.value = proj_data.get("pm_email") or ""
+        tf_pm_phone.value = proj_data.get("pm_phone") or ""
 
         tf_street_1.value = proj_data.get("street_address_1", "")
         tf_street_2.value = proj_data.get("street_address_2", "")
@@ -6848,10 +7117,10 @@ def build_service_intake_form(
         tf_postal.value = proj_data.get("postal_code", "")
         tf_country.value = proj_data.get("country", "US")
 
-        tf_contact_first.value = proj_data.get("project_site_contact_first_name") or proj_data.get("pm_first_name", "")
-        tf_contact_last.value = proj_data.get("project_site_contact_last_name") or proj_data.get("pm_last_name", "")
-        tf_contact_email.value = proj_data.get("project_site_contact_email") or proj_data.get("pm_email", "")
-        tf_contact_phone.value = proj_data.get("project_site_contact_phone") or proj_data.get("pm_phone", "")
+        tf_contact_first.value = proj_data.get("project_site_contact_first_name") or ""
+        tf_contact_last.value = proj_data.get("project_site_contact_last_name") or ""
+        tf_contact_email.value = proj_data.get("project_site_contact_email") or ""
+        tf_contact_phone.value = proj_data.get("project_site_contact_phone") or ""
 
         if page:
             page.update()
@@ -6865,8 +7134,14 @@ def build_service_intake_form(
 
         tf_job_num.value = ""
         tf_company.value = ""
+        tf_company_acct.value = ""
         tf_site_name.value = ""
         tf_proj_name.value = ""
+
+        tf_pm_first.value = ""
+        tf_pm_last.value = ""
+        tf_pm_email.value = ""
+        tf_pm_phone.value = ""
 
         tf_street_1.value = ""
         tf_street_2.value = ""
@@ -6895,6 +7170,32 @@ def build_service_intake_form(
             show_toast(page, "Job #, Campus Name, Project Name, Street, City, and Sales Rep First Name are required!", kind="error")
             return
 
+        sales_email_val = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
+        if sales_email_val:
+            resolve_sales_user(
+                user_email=sales_email_val,
+                first_name=tf_sales_first.value.strip(),
+                last_name=tf_sales_last.value.strip(),
+                user_phone=tf_sales_phone.value.strip()
+            )
+
+        acct_val = None
+        if tf_company.value:
+            acct_val = tf_company_acct.value.strip().upper() if tf_company_acct.value else f"CON-{tf_job_num.value.strip().upper()[:4]}"
+            resolve_contractor(acct_val, tf_company.value.strip())
+
+        pm_email_val = tf_pm_email.value.strip().lower() if tf_pm_email.value else ""
+        clean_pm_id = None
+        if pm_email_val and acct_val:
+            clean_pm_id = resolve_pm_contact(
+                tbco_account_number=acct_val,
+                first_name=tf_pm_first.value.strip() if tf_pm_first.value else "",
+                last_name=tf_pm_last.value.strip() if tf_pm_last.value else "",
+                email=pm_email_val,
+                phone=tf_pm_phone.value.strip() if tf_pm_phone.value else "",
+                title="Project Manager"
+            )
+
         req_id = f"REQ-{int(time.time())}"
         triage_val = "Dispatched" if (dd_technician.value and dd_technician.value.strip()) else "Unassigned"
         
@@ -6905,15 +7206,19 @@ def build_service_intake_form(
             "site_name": tf_site_name.value.strip(),
             "project_name": tf_proj_name.value.strip(),
             "contractor_company_name": tf_company.value.strip(),
+            "tbco_account_number": acct_val or "",
+            "pm_contact_id": clean_pm_id,
+            "pm_first_name": tf_pm_first.value.strip() if tf_pm_first.value else "",
+            "pm_last_name": tf_pm_last.value.strip() if tf_pm_last.value else "",
+            "pm_email": pm_email_val,
+            "pm_phone": tf_pm_phone.value.strip() if tf_pm_phone.value else "",
             "street_address_1": tf_street_1.value.strip(),
             "street_address_2": tf_street_2.value.strip() if tf_street_2.value else "",
             "city": tf_city.value.strip(),
             "state": tf_state.value.strip(),
             "postal_code": tf_postal.value.strip() if tf_postal.value else "",
             "country": tf_country.value.strip() if tf_country.value else "US",
-            "sales_rep_first_name": tf_sales_first.value.strip(),
-            "sales_rep_last_name": tf_sales_last.value.strip() if tf_sales_last.value else "",
-            "sales_rep_email": tf_sales_email.value.strip().lower() if tf_sales_email.value else "",
+            "sales_rep_email": sales_email_val,
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "project_site_contact_first_name": tf_contact_first.value.strip() if tf_contact_first.value else "",
             "project_site_contact_last_name": tf_contact_last.value.strip() if tf_contact_last.value else "",
@@ -6932,19 +7237,29 @@ def build_service_intake_form(
                     INSERT INTO intake_requests (
                         request_id, tbc_job_number, team_code, site_name, project_name,
                         contractor_company_name, street_address_1, street_address_2, city, state,
-                        postal_code, country, sales_rep_first_name, sales_rep_last_name, sales_rep_email,
-                        sales_rep_phone, project_site_contact_first_name, project_site_contact_last_name,
+                        postal_code, country, sales_rep_email, sales_rep_phone,
+                        project_site_contact_first_name, project_site_contact_last_name,
                         project_site_contact_email, project_site_contact_phone, issue_description,
                         triage_status, request_type, submission_timestamp
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, tuple(intake_payload.values()))
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    intake_payload["request_id"], intake_payload["tbc_job_number"], intake_payload["team_code"],
+                    intake_payload["site_name"], intake_payload["project_name"], intake_payload["contractor_company_name"],
+                    intake_payload["street_address_1"], intake_payload["street_address_2"], intake_payload["city"],
+                    intake_payload["state"], intake_payload["postal_code"], intake_payload["country"],
+                    intake_payload["sales_rep_email"], intake_payload["sales_rep_phone"],
+                    intake_payload["project_site_contact_first_name"], intake_payload["project_site_contact_last_name"],
+                    intake_payload["project_site_contact_email"], intake_payload["project_site_contact_phone"],
+                    intake_payload["issue_description"], intake_payload["triage_status"], intake_payload["request_type"],
+                    intake_payload["submission_timestamp"]
+                ))
 
                 if dd_technician.value and tf_scheduled_time.value:
                     job_id = f"JOB-{int(time.time())}"
                     cursor.execute("""
                         INSERT INTO dispatches (job_id, tbc_job_number, technician_email, sales_rep_email, scheduled_time, status, job_type)
                         VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
-                    """, (job_id, intake_payload["tbc_job_number"], dd_technician.value, intake_payload["sales_rep_email"], tf_scheduled_time.value.strip(), intake_payload["request_type"]))
+                    """, (job_id, intake_payload["tbc_job_number"], dd_technician.value, sales_email_val, tf_scheduled_time.value.strip(), intake_payload["request_type"]))
 
                 conn.commit()
         except Exception as sql_err:
@@ -6952,7 +7267,7 @@ def build_service_intake_form(
 
         if firestore_db is not None:
             try:
-                firestore_db.collection("intake_ledger").document(req_id).set(intake_payload, merge=True)
+                firestore_db.collection("intake_requests").document(req_id).set(intake_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore intake sync error: {fs_err}")
 
@@ -6962,16 +7277,38 @@ def build_service_intake_form(
         if on_success_callback:
             on_success_callback(intake_payload)
 
+    # Form UI Layout Assembly
     form_container = ft.Container(
         content=ft.Column([
+            # Sales Rep Section
+            sales_instructions_note,
+            ft.Row([tf_sales_email], spacing=10),
             ft.Row([tf_sales_first, tf_sales_last], spacing=10),
-            ft.Row([tf_sales_email, tf_sales_phone, dd_team_code], spacing=10),
-            ft.Row([tf_job_num, tf_company], spacing=10),
-            ft.Row([tf_site_name, tf_proj_name], spacing=10),
+            ft.Row([tf_sales_phone, dd_team_code], spacing=10),
+            
+            # Contractor Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            contractor_instructions_note,
+            ft.Row([tf_company, tf_company_acct], spacing=10),
+            
+            # Company Project Manager Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            ft.Row([tf_pm_first, tf_pm_last], spacing=10),
+            ft.Row([tf_pm_email, tf_pm_phone], spacing=10),
+            
+            # Job & Location Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            ft.Row([tf_job_num, tf_site_name, tf_proj_name], spacing=10),
             ft.Row([tf_street_1, tf_street_2], spacing=10),
             ft.Row([tf_city, tf_state, tf_postal, tf_country], spacing=8),
+            
+            # Site Contact Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([tf_contact_first, tf_contact_last], spacing=10),
             ft.Row([tf_contact_email, tf_contact_phone], spacing=10),
+            
+            # Service & Upload Section
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([dd_request_type], spacing=10),
             tf_issue,
             ft.Row([dd_technician, tf_scheduled_time], spacing=10),
@@ -7104,8 +7441,7 @@ FILE: src\frontend\mobile_suite.py
 
 """
 src/frontend/mobile_suite.py
-Mobile interface for technicians to view assigned dispatches, inspect equipment assets, 
-log parts usage, and record inspection reports.
+Mobile interface for technicians using normalized assets queries and joined sales details.
 """
 
 import flet as ft
@@ -7117,7 +7453,6 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 
-# Dynamic path resolution to connect with local backend engines safely
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(CURRENT_DIR)
 ROOT_DIR = os.path.dirname(SRC_DIR)
@@ -7125,22 +7460,18 @@ ROOT_DIR = os.path.dirname(SRC_DIR)
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-# Firestore Client, Theme & Backend Integration Imports
 from google.cloud.firestore_v1.base_query import FieldFilter
-from src.backend.db_manager import db, local_db, record_job_part_used, execute_7_day_local_cache_sweep
+from src.backend.db_manager import db, local_db, record_job_part_used
 from src.frontend.theme import FieldFlowLightTheme
 
-# Shared Utilities & Modular Component Imports
 from src.frontend.shared_utils import show_toast, open_drive_link, open_navigation_map
-from src.frontend.ticket_card_component import build_standard_ticket_card
-from src.frontend.asset_card_component import build_site_asset_card, build_visit_history_card
+from src.frontend.cards_component import build_standard_ticket_card, build_site_asset_card, build_visit_history_card
 from src.frontend.vfd_form_component import build_vfd_service_form
-from src.frontend.asset_form_component import build_asset_registration_tool
+from src.frontend.forms_component import build_asset_registration_tool
 from src.frontend.technician_clock_component import build_technician_clock, update_dispatch_status
 
 
 def update_project_asset_details(tbc_job_number: str, old_serial: str, new_name: str, new_serial: str, new_model: str) -> bool:
-    """Updates asset tags, serials, and models in the normalized assets table."""
     clean_job_num = str(tbc_job_number or "").strip()
     try:
         with local_db.get_connection() as conn:
@@ -7173,7 +7504,6 @@ def update_project_asset_details(tbc_job_number: str, old_serial: str, new_name:
 
 
 def log_part_usage_submission(job_id: str, sku: str, qty: float, is_unlisted: bool, description: str, cost: float) -> str:
-    """Submits used parts to SQLite, explicitly passing sku = None when logging unlisted items."""
     actual_sku = None if is_unlisted else sku
     return record_job_part_used(
         job_id=job_id,
@@ -7227,7 +7557,7 @@ def main(page: ft.Page):
         def handle_service_form_submit(asset_serial, target_status, metrics_payload):
             update_dispatch_status(job_id, target_status)
             serviced_assets_cache[str(asset_serial)] = {"status": "Serviced", "metrics": metrics_payload}
-            job_data["completion_status"] = target_status
+            job_data["status"] = target_status
 
             if is_vfd:
                 show_toast_local("📌 Report Saved! Held as PENDING for Sidecar Portal.", kind="warning")
@@ -7251,14 +7581,13 @@ def main(page: ft.Page):
         tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
         asset_id = str(asset_data.get("asset_id") or "")
         
-        asset_name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name") or "Site Equipment")
-        asset_model = str(asset_data.get("model_number") or "N/A")
-        asset_serial = str(asset_data.get("serial_number") or "N/A")
-        installed_date = str(asset_data.get("installation_date") or asset_data.get("installed_date") or "Recently Installed")
+        asset_name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name", "Site Equipment"))
+        asset_model = str(asset_data.get("model_number", "N/A"))
+        asset_serial = str(asset_data.get("serial_number", "N/A"))
+        installed_date = str(asset_data.get("installation_date", "Recently Installed"))
 
         is_serviced = serviced_assets_cache.get(asset_serial, {}).get("status") == "Serviced"
 
-        # Query all historical asset inspections linked to this asset across dispatches
         inspection_history = []
         if asset_id:
             try:
@@ -7422,7 +7751,7 @@ def main(page: ft.Page):
         drive_id = str(job_data.get('drive_id') or f"FLD-DRIVE-{tbc_job_num}")
 
         sales_team_name = "Tampa HVAC Sales Team"
-        sales_rep_contact = "Alice Vance (813-555-1111)"
+        sales_rep_contact = "sales1@tombarrow.com"
         site_contact_info = "Mike Smith (813-555-0199)"
         request_scope_info = str(job_data.get("issue_description") or "Annual Preventative Maintenance & Firmware Flash")
 
@@ -7443,7 +7772,7 @@ def main(page: ft.Page):
                 previous_visits_list = [dict(r) for r in cursor.fetchall()]
 
                 cursor.execute("""
-                    SELECT i.issue_description, i.sales_rep_email, u.user_name AS sales_team
+                    SELECT i.issue_description, i.sales_rep_email, (u.first_name || ' ' || u.last_name) AS sales_full_name
                     FROM intake_requests i
                     LEFT JOIN users u ON i.sales_rep_email = u.user_email
                     WHERE i.tbc_job_number = ? LIMIT 1
@@ -7451,9 +7780,12 @@ def main(page: ft.Page):
                 i_row = cursor.fetchone()
                 if i_row:
                     i_dict = dict(i_row)
-                    if i_dict.get("sales_team"): sales_team_name = str(i_dict.get("sales_team"))
-                    if i_dict.get("sales_rep_email"): sales_rep_contact = str(i_dict.get("sales_rep_email"))
-                    if i_dict.get("issue_description"): request_scope_info = str(i_dict.get("issue_description"))
+                    if i_dict.get("sales_full_name") and i_dict["sales_full_name"].strip(): 
+                        sales_team_name = str(i_dict["sales_full_name"])
+                    if i_dict.get("sales_rep_email"): 
+                        sales_rep_contact = str(i_dict["sales_rep_email"])
+                    if i_dict.get("issue_description"): 
+                        request_scope_info = str(i_dict["issue_description"])
         except Exception as err:
             print(f"Local briefing query note: {err}")
 
@@ -7462,7 +7794,7 @@ def main(page: ft.Page):
                 disp_doc = db.collection("dispatches").document(job_id).get()
                 if disp_doc.exists:
                     disp_data = disp_doc.to_dict()
-                    job_data["completion_status"] = str(disp_data.get("status", job_data.get("completion_status")))
+                    job_data["status"] = str(disp_data.get("status", job_data.get("status")))
                     job_type = str(disp_data.get("job_type", job_type))
 
                 assets_query = db.collection("assets").where(filter=FieldFilter("tbc_job_number", "==", tbc_job_num)).stream()
@@ -7484,7 +7816,7 @@ def main(page: ft.Page):
             )
         else:
             for asset in project_assets_list:
-                a_serial = str(asset.get("serial_number") or "N/A")
+                a_serial = str(asset.get("serial_number", "N/A"))
                 is_serviced = serviced_assets_cache.get(a_serial, {}).get("status") == "Serviced"
 
                 asset_card = build_site_asset_card(
@@ -7530,10 +7862,10 @@ def main(page: ft.Page):
                     clock_component
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 
-                ft.Text(str(job_data.get("contractor_name", "Tampa Chiller Services Inc")), size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY),
+                ft.Text(str(job_data.get("contractor_company_name", "Tampa Chiller Services Inc")), size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY),
                 ft.Text(f"📍 Address: {address}", size=12, color=FieldFlowLightTheme.TEXT_MUTED),
                 ft.Text(f"👤 Site Contact: {site_contact_info}", size=12, color=FieldFlowLightTheme.TEXT_MUTED),
-                ft.Text(f"💼 Sales Team: {sales_team_name} ({sales_rep_contact})", size=12, color=FieldFlowLightTheme.ACCENT_BLUE, weight=ft.FontWeight.W_500),
+                ft.Text(f"💼 Sales Rep: {sales_team_name} ({sales_rep_contact})", size=12, color=FieldFlowLightTheme.ACCENT_BLUE, weight=ft.FontWeight.W_500),
                 ft.Text(f"🔧 Request Scope: {request_scope_info}", size=12, italic=True, color=FieldFlowLightTheme.ACCENT_BLUE),
                 
                 ft.Row([
@@ -7583,7 +7915,7 @@ def main(page: ft.Page):
         value=tech_identity["email"],
         options=[
             ft.dropdown.Option("tech1@tbcotampaservice.com", "Tech One (Bob)"),
-            ft.dropdown.Option("tech2@tbcotampaservice.com", "Tech Two (Alex)"),
+            ft.dropdown.Option("tech2@tbcotampaservice.com", "Alex Tech (tech2@tbcotampaservice.com)"),
             ft.dropdown.Option("admin@tombarrow.com", "Office Admin (Alice)")
         ],
         border_color=FieldFlowLightTheme.ACCENT_BLUE,
@@ -7608,10 +7940,15 @@ def main(page: ft.Page):
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT d.*, p.site_name AS site_address, i.issue_description
+                    SELECT d.*, 
+                           l.street_address_1 || ', ' || l.city || ', ' || l.state AS site_address,
+                           i.issue_description, i.contractor_company_name, i.site_name, i.project_name,
+                           u.first_name AS sales_first_name, u.last_name AS sales_last_name
                     FROM dispatches d
                     LEFT JOIN projects p ON d.tbc_job_number = p.tbc_job_number
+                    LEFT JOIN locations l ON p.site_name = l.site_name
                     LEFT JOIN intake_requests i ON d.tbc_job_number = i.tbc_job_number
+                    LEFT JOIN users u ON i.sales_rep_email = u.user_email
                     WHERE LOWER(d.technician_email) = LOWER(?)
                 """, (tech_identity["email"],))
                 rows = cursor.fetchall()
@@ -7644,8 +7981,8 @@ def main(page: ft.Page):
         assigned_jobs = []
 
         for job in raw_jobs:
-            status = (job.get("status") or job.get("completion_status") or "Scheduled").strip()
-            sched_time = str(job.get("scheduled_time") or "")
+            status = str(job.get("status", "Scheduled")).strip()
+            sched_time = str(job.get("scheduled_time", ""))
 
             if status == "Completed":
                 job_date = sched_time.split("T")[0] if "T" in sched_time else sched_time.split(" ")[0]
@@ -7655,13 +7992,13 @@ def main(page: ft.Page):
             assigned_jobs.append(job)
 
         def get_dispatches_priority(job):
-            status = (job.get("status") or job.get("completion_status") or "Scheduled").strip()
+            status = str(job.get("status", "Scheduled")).strip()
             if status == "Pending":
-                return (0, str(job.get("scheduled_time") or ""))
+                return (0, str(job.get("scheduled_time", "")))
             elif status == "Completed":
-                return (2, str(job.get("scheduled_time") or ""))
+                return (2, str(job.get("scheduled_time", "")))
             else:
-                return (1, str(job.get("scheduled_time") or ""))
+                return (1, str(job.get("scheduled_time", "")))
 
         assigned_jobs.sort(key=get_dispatches_priority)
 
@@ -7712,7 +8049,6 @@ def main(page: ft.Page):
         render_viewport(feed_layout)
 
     load_chronological_feed_view()
-    execute_7_day_local_cache_sweep()
 
 
 if __name__ == "__main__":
@@ -8132,6 +8468,11 @@ def open_navigation_map(page: ft.Page, address: str) -> None:
 FILE: src\frontend\sidecar_portal.py
 ========================================
 
+"""
+src/frontend/sidecar_portal.py
+Technician Desktop Portal using normalized relational queries and canonical keys.
+"""
+
 import flet as ft
 import os
 import sys
@@ -8139,7 +8480,6 @@ import time
 import json
 from datetime import datetime
 
-# Dynamic path resolution to connect with local backend database
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(CURRENT_DIR)
 ROOT_DIR = os.path.dirname(SRC_DIR)
@@ -8147,14 +8487,12 @@ ROOT_DIR = os.path.dirname(SRC_DIR)
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-# Firestore Client, Theme & Backend Integration Imports
 from google.cloud.firestore_v1.base_query import FieldFilter
 from src.backend.db_manager import db, local_db
 from src.backend.drive_service import upload_files_to_drive_folder
 from src.frontend.theme import FieldFlowLightTheme
 
-# Modular Components & Shared Utilities
-from src.frontend.ticket_card_component import build_standard_ticket_card
+from src.frontend.cards_component import build_standard_ticket_card
 from src.frontend.shared_utils import show_toast, open_drive_link
 
 
@@ -8181,18 +8519,30 @@ def fetch_pending_tickets():
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT d.*, p.site_address, p.contractor_name, p.drive_id AS project_drive_id,
+                SELECT d.job_id, d.tbc_job_number, d.technician_email, d.sales_rep_email,
+                       d.scheduled_time, d.status, d.job_type,
+                       p.project_name, p.drive_id AS project_drive_id,
+                       l.street_address_1 || ', ' || l.city || ', ' || l.state AS site_address,
+                       c.company_name AS contractor_company_name,
+                       a.model_number, a.serial_number, a.equipment_tag,
+                       u.first_name AS sales_first_name, u.last_name AS sales_last_name,
+                       i.project_site_contact_first_name, i.project_site_contact_last_name,
+                       i.project_site_contact_phone,
                        ai.inspection_metrics
                 FROM dispatches d
                 LEFT JOIN projects p ON d.tbc_job_number = p.tbc_job_number
+                LEFT JOIN locations l ON p.site_name = l.site_name
+                LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                LEFT JOIN assets a ON p.tbc_job_number = a.tbc_job_number
+                LEFT JOIN intake_requests i ON d.tbc_job_number = i.tbc_job_number
+                LEFT JOIN users u ON i.sales_rep_email = u.user_email
                 LEFT JOIN asset_inspections ai ON d.job_id = ai.job_id
-                WHERE LOWER(TRIM(d.completion_status)) = 'pending'
+                WHERE LOWER(TRIM(d.status)) = 'pending'
             """)
             rows = cursor.fetchall()
             for row in rows:
                 r_dict = dict(row)
                 j_id = str(r_dict.get("job_id"))
-                tbc_num = str(r_dict.get("tbc_job_number") or "")
 
                 if r_dict.get("project_drive_id"):
                     r_dict["drive_id"] = r_dict["project_drive_id"]
@@ -8205,23 +8555,6 @@ def fetch_pending_tickets():
                         pass
                 r_dict["vfd_data"] = vfd_data
 
-                if tbc_num:
-                    cursor.execute("SELECT model_number, serial_number, asset_name FROM project_assets WHERE tbc_job_number = ? LIMIT 1", (tbc_num,))
-                    a_row = cursor.fetchone()
-                    if a_row:
-                        a_dict = dict(a_row)
-                        r_dict["model_number"] = a_dict.get("model_number")
-                        r_dict["serial_number"] = a_dict.get("serial_number")
-                        r_dict["asset_name"] = a_dict.get("asset_name")
-
-                    cursor.execute("SELECT project_site_contact_name, project_site_contact_phone, sales_team_email FROM intake_requests WHERE tbc_job_number = ? LIMIT 1", (tbc_num,))
-                    i_row = cursor.fetchone()
-                    if i_row:
-                        i_dict = dict(i_row)
-                        r_dict["project_site_contact_name"] = i_dict.get("project_site_contact_name")
-                        r_dict["project_site_contact_phone"] = i_dict.get("project_site_contact_phone")
-                        r_dict["sales_team_email"] = i_dict.get("sales_team_email")
-
                 if j_id:
                     tickets_map[j_id] = r_dict
     except Exception as e:
@@ -8229,7 +8562,7 @@ def fetch_pending_tickets():
 
     if db is not None:
         try:
-            dispatches_query = db.collection("dispatches").where(filter=FieldFilter("completion_status", "==", "Pending")).stream()
+            dispatches_query = db.collection("dispatches").where(filter=FieldFilter("status", "==", "Pending")).stream()
             for doc in dispatches_query:
                 ticket_data = doc.to_dict()
                 job_id = str(doc.id)
@@ -8255,23 +8588,23 @@ def fetch_pending_tickets():
                     if proj_doc.exists:
                         p_data = proj_doc.to_dict()
                         ticket_data["project_name"] = p_data.get("project_name")
-                        ticket_data["site_address"] = p_data.get("site_address")
-                        ticket_data["contractor_name"] = p_data.get("contractor_name")
+                        ticket_data["contractor_company_name"] = p_data.get("contractor_company_name")
                         ticket_data["drive_id"] = p_data.get("drive_id")
 
-                    asset_query = db.collection("project_assets").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
+                    asset_query = db.collection("assets").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
                     for a_doc in asset_query:
                         a_data = a_doc.to_dict()
                         ticket_data["model_number"] = a_data.get("model_number")
                         ticket_data["serial_number"] = a_data.get("serial_number")
-                        ticket_data["asset_name"] = a_data.get("asset_name")
+                        ticket_data["equipment_tag"] = a_data.get("equipment_tag")
 
-                    intake_query = db.collection("intake_ledger").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
+                    intake_query = db.collection("intake_requests").where(filter=FieldFilter("tbc_job_number", "==", tbc_num)).limit(1).stream()
                     for i_doc in intake_query:
                         i_data = i_doc.to_dict()
-                        ticket_data["project_site_contact_name"] = i_data.get("project_site_contact_name")
+                        ticket_data["project_site_contact_first_name"] = i_data.get("project_site_contact_first_name")
+                        ticket_data["project_site_contact_last_name"] = i_data.get("project_site_contact_last_name")
                         ticket_data["project_site_contact_phone"] = i_data.get("project_site_contact_phone")
-                        ticket_data["sales_team_email"] = i_data.get("sales_team_email")
+                        ticket_data["sales_rep_email"] = i_data.get("sales_rep_email")
 
                 tickets_map[job_id] = ticket_data
         except Exception as e:
@@ -8287,7 +8620,7 @@ def mark_warranty_registration_complete(tbc_job_number: str, registration_file_n
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE projects SET stage = 'Completed' WHERE tbc_job_number = ?", (clean_job_num,))
-            cursor.execute("UPDATE dispatches SET completion_status = 'Completed' WHERE tbc_job_number = ?", (clean_job_num,))
+            cursor.execute("UPDATE dispatches SET status = 'Completed' WHERE tbc_job_number = ?", (clean_job_num,))
             conn.commit()
     except Exception as e:
         print(f"Error completing local warranty registration: {e}")
@@ -8299,7 +8632,7 @@ def mark_warranty_registration_complete(tbc_job_number: str, registration_file_n
         db.collection("projects").document(clean_job_num).set({"stage": "Completed"}, merge=True)
         disp_query = db.collection("dispatches").where(filter=FieldFilter("tbc_job_number", "==", clean_job_num)).stream()
         for doc in disp_query:
-            doc.reference.update({"completion_status": "Completed"})
+            doc.reference.update({"status": "Completed"})
         return True
     except Exception as e:
         print(f"Error completing cloud warranty registration: {e}")
@@ -8313,7 +8646,6 @@ def build_field_copy_card(
     show_toast_fn,
     icon_name=ft.icons.COPY
 ) -> ft.Container:
-    """Helper component that constructs an individual field copy card."""
     field_val = str(raw_val) if raw_val is not None and str(raw_val).strip() != "" else "N/A"
     
     def handle_copy_click(e):
@@ -8399,11 +8731,11 @@ def main(page: ft.Page):
         selected_ticket_state["ticket"] = ticket
         
         job_num = str(ticket.get("tbc_job_number") or "N/A")
-        client = str(ticket.get("contractor_name") or "Valued Client")
+        client = str(ticket.get("contractor_company_name") or "Valued Client")
         address = str(ticket.get("site_address") or "Address Unspecified")
         model = str(ticket.get("model_number") or "N/A")
         serial = str(ticket.get("serial_number") or "N/A")
-        site_contact = f"{ticket.get('project_site_contact_name') or 'Mike Smith'} ({ticket.get('project_site_contact_phone') or '813-555-0199'})"
+        site_contact = f"{ticket.get('project_site_contact_first_name', '')} {ticket.get('project_site_contact_last_name', '')} ({ticket.get('project_site_contact_phone', 'N/A')})".strip()
         tech_email = str(ticket.get("technician_email") or "tech1@tbcotampaservice.com")
         sched_date = str(ticket.get("scheduled_time") or datetime.now().strftime("%Y-%m-%d"))
 
@@ -8642,10 +8974,6 @@ def main(page: ft.Page):
     )
 
     refresh_desktop_portal_view()
-
-
-if __name__ == "__main__":
-    ft.app(target=main)
 
 ========================================
 FILE: src\frontend\technician_clock_component.py
@@ -8985,12 +9313,16 @@ class FieldFlowLightTheme:
 FILE: src\frontend\vfd_form_component.py
 ========================================
 
+"""
+src/frontend/vfd_form_component.py
+Modular inspection wizard persisting to standardized assets and asset_inspections schemas.
+"""
+
 import flet as ft
 import time
 import os
 import sys
 
-# Dynamic path resolution to connect with local backend engines safely
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(CURRENT_DIR)
 ROOT_DIR = os.path.dirname(SRC_DIR)
@@ -9008,13 +9340,9 @@ def build_vfd_service_form(
     on_back_callback,
     show_toast_fn
 ) -> ft.Column:
-    """
-    Modular Component: Multi-Step Inspection Wizard
-    Supports both VFD Startup reports (3 steps) and General Service reports (2 steps).
-    """
     asset_serial = str(asset_data.get("serial_number", "SN-UNKNOWN"))
     asset_id = str(asset_data.get("asset_id") or f"AST-{asset_serial}")
-    asset_name = str(asset_data.get("asset_name", "Site Asset"))
+    asset_name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name", "Site Asset"))
     job_id = str(job_data.get("job_id", "JOB-UNKNOWN"))
     tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
     job_type = str(job_data.get("job_type", "VFD_STARTUP")).upper()
@@ -9390,15 +9718,16 @@ def build_vfd_service_form(
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT OR REPLACE INTO assets (asset_id, tbc_job_number, model_number, serial_number, equipment_tag)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (str(asset_id), str(tbc_job_num), "MOD-VFD", str(asset_serial), str(asset_name)))
+                    INSERT OR REPLACE INTO assets (asset_id, tbc_job_number, site_name, model_number, serial_number, equipment_tag)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (str(asset_id), str(tbc_job_num), str(tbc_job_num), "MOD-VFD", str(asset_serial), str(asset_name)))
                 conn.commit()
 
             if db is not None:
                 db.collection("assets").document(str(asset_id)).set({
                     "asset_id": str(asset_id),
                     "tbc_job_number": str(tbc_job_num),
+                    "site_name": str(tbc_job_num),
                     "model_number": "MOD-VFD",
                     "serial_number": str(asset_serial),
                     "equipment_tag": str(asset_name)

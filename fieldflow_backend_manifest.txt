@@ -267,6 +267,34 @@ from src.backend.db_manager import local_db, db as firestore_db
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
+def build_gcal_ticket_description(ticket_data: dict) -> str:
+    """Formats structured key-value pairs for Google Calendar event descriptions."""
+    job_type = ticket_data.get("request_type") or ticket_data.get("job_type") or "VFD Startup"
+    project_name = ticket_data.get("project_name") or "Service Project"
+    contractor = ticket_data.get("contractor_company_name") or "Valued Client"
+
+    sc_first = ticket_data.get("project_site_contact_first_name") or ""
+    sc_last = ticket_data.get("project_site_contact_last_name") or ""
+    sc_name = f"{sc_first} {sc_last}".strip() or "N/A"
+    sc_phone = ticket_data.get("project_site_contact_phone") or "N/A"
+
+    rb_first = ticket_data.get("sales_rep_first_name") or ""
+    rb_last = ticket_data.get("sales_rep_last_name") or ""
+    rb_name = f"{rb_first} {rb_last}".strip() or ticket_data.get("sales_rep_email") or "Sales Representative"
+    rb_phone = ticket_data.get("sales_rep_phone") or "N/A"
+
+    issue_desc = ticket_data.get("issue_description") or "Service Request Dispatch"
+
+    return (
+        f"JOB TYPE: {job_type}\n"
+        f"PROJECT: {project_name}\n"
+        f"CONTRACTOR: {contractor}\n"
+        f"SITE CONTACT: {sc_name}, {sc_phone}\n"
+        f"REQUESTED BY: {rb_name}, {rb_phone}\n\n"
+        f"DESCRIPTION: {issue_desc}"
+    )
+
+
 class GoogleCalendarManager:
     """Handles formatting and publishing appointment entries to Google Calendar safely."""
 
@@ -386,7 +414,8 @@ class GoogleCalendarService:
         try:
             creds_dict = json.loads(raw_creds)
             credentials = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
-            return build('calendar', 'v3', credentials=credentials)
+            # Passing cache_discovery=False prevents file_cache warning logs and eliminates network discovery delays
+            return build('calendar', 'v3', credentials=credentials, cache_discovery=False)
         except Exception as e:
             logging.error(f"Failed to build Google Calendar service client: {e}")
             return None
@@ -723,7 +752,7 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # 9. INTAKE REQUESTS (FULLY STANDARDIZED WITH 24 COLUMNS)
+            # 9. INTAKE REQUESTS (NORMALIZED SCHEMA: SALES REP FK ONLY)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS intake_requests (
                     request_id TEXT PRIMARY KEY,
@@ -738,8 +767,6 @@ class LocalDatabaseManager:
                     state TEXT,
                     postal_code TEXT,
                     country TEXT DEFAULT 'US',
-                    sales_rep_first_name TEXT,
-                    sales_rep_last_name TEXT,
                     sales_rep_email TEXT,
                     sales_rep_phone TEXT,
                     project_site_contact_first_name TEXT,
@@ -976,6 +1003,7 @@ def resolve_sales_user(
     user_email: str,
     first_name: Optional[str] = None,
     last_name: Optional[str] = None,
+    user_phone: Optional[str] = None,
     branch_city: Optional[str] = None
 ) -> str:
     clean_email = user_email.strip().lower()
@@ -995,6 +1023,7 @@ def resolve_sales_user(
         "user_email": clean_email,
         "first_name": f_name,
         "last_name": l_name,
+        "user_phone": user_phone,
         "branch_city": branch_city,
         "role": "Sales",
         "active_status": "Active"
@@ -1011,12 +1040,17 @@ def resolve_sales_user(
         cursor.execute("SELECT user_email FROM users WHERE LOWER(user_email) = ?", (clean_email,))
         row = cursor.fetchone()
         if row:
+            cursor.execute("""
+                UPDATE users SET first_name = ?, last_name = ?, user_phone = COALESCE(?, user_phone)
+                WHERE LOWER(user_email) = ?
+            """, (f_name, l_name, user_phone, clean_email))
+            conn.commit()
             return row["user_email"]
 
         cursor.execute("""
-            INSERT INTO users (user_email, first_name, last_name, branch_city, role)
-            VALUES (?, ?, ?, ?, 'Sales')
-        """, (clean_email, f_name, l_name, branch_city))
+            INSERT INTO users (user_email, first_name, last_name, user_phone, branch_city, role)
+            VALUES (?, ?, ?, ?, ?, 'Sales')
+        """, (clean_email, f_name, l_name, user_phone, branch_city))
         conn.commit()
         return clean_email
 
@@ -1075,10 +1109,19 @@ def resolve_pm_contact(
 
 
 def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
-    """Executes atomic service intake transaction using standardized 24-field names."""
+    """Executes atomic service intake transaction using normalized intake_requests schema."""
     req_id = form_data.get("request_id") or f"REQ-{uuid.uuid4().hex[:8].upper()}"
     job_no = form_data.get("tbc_job_number", "889900XX").strip().upper()
     submission_time = form_data.get("submission_timestamp") or datetime.now(timezone.utc).isoformat()
+
+    sales_email = (form_data.get("sales_rep_email") or "").strip().lower()
+    if sales_email:
+        resolve_sales_user(
+            user_email=sales_email,
+            first_name=form_data.get("sales_rep_first_name", ""),
+            last_name=form_data.get("sales_rep_last_name", ""),
+            user_phone=form_data.get("sales_rep_phone", "")
+        )
 
     standardized_payload = {
         "request_id": req_id,
@@ -1093,9 +1136,7 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "state": form_data.get("state", ""),
         "postal_code": form_data.get("postal_code", ""),
         "country": form_data.get("country", "US"),
-        "sales_rep_first_name": form_data.get("sales_rep_first_name", ""),
-        "sales_rep_last_name": form_data.get("sales_rep_last_name", ""),
-        "sales_rep_email": form_data.get("sales_rep_email", ""),
+        "sales_rep_email": sales_email,
         "sales_rep_phone": form_data.get("sales_rep_phone", ""),
         "project_site_contact_first_name": form_data.get("project_site_contact_first_name", ""),
         "project_site_contact_last_name": form_data.get("project_site_contact_last_name", ""),
@@ -1107,14 +1148,14 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "submission_timestamp": submission_time
     }
 
-    # Step A: Primary Cloud Write to Firestore 'intake_ledger'
+    # Primary Cloud Write to Firestore 'intake_requests' collection
     if db is not None:
         try:
-            db.collection("intake_ledger").document(req_id).set(standardized_payload, merge=True)
+            db.collection("intake_requests").document(req_id).set(standardized_payload, merge=True)
         except Exception as err:
             logging.warning(f"Cloud transaction note: {err}")
 
-    # Step B: Offline Local SQLite Mirror
+    # Offline Local SQLite Mirror
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN TRANSACTION;")
@@ -1123,11 +1164,11 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
             INSERT OR REPLACE INTO intake_requests (
                 request_id, tbc_job_number, team_code, site_name, project_name,
                 contractor_company_name, street_address_1, street_address_2, city, state,
-                postal_code, country, sales_rep_first_name, sales_rep_last_name, sales_rep_email,
-                sales_rep_phone, project_site_contact_first_name, project_site_contact_last_name,
+                postal_code, country, sales_rep_email, sales_rep_phone,
+                project_site_contact_first_name, project_site_contact_last_name,
                 project_site_contact_email, project_site_contact_phone, issue_description,
                 triage_status, request_type, submission_timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, tuple(standardized_payload.values()))
 
         conn.commit()
@@ -1645,8 +1686,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 def get_sales_rep_email_for_dispatch(job_id: str) -> str:
     """
     Retrieves the sales rep email associated with a job dispatch.
-    Checks dispatches first, falls back to intake_requests via tbc_job_number,
-    or defaults to sales1@tombarrow.com if unassigned.
+    Queries dispatches first, falls back to intake_requests via tbc_job_number.
     """
     clean_job_id = str(job_id or "").strip()
     if not clean_job_id:
@@ -1677,18 +1717,14 @@ def get_sales_rep_email_for_dispatch(job_id: str) -> str:
 
 
 def send_dispatch_receipt_email(job_id: str, receipt_data: Dict[str, Any]) -> bool:
-    """
-    Constructs and dispatches a completion receipt email to the designated sales representative.
-    """
+    """Constructs and dispatches a completion receipt email to the sales rep."""
     recipient_email = get_sales_rep_email_for_dispatch(job_id)
     tbc_job_number = receipt_data.get("tbc_job_number", "UNKNOWN")
     summary = receipt_data.get("work_summary", "No details provided.")
 
-    logging.info(f"📧 [EMAIL DISPATCH] Preparing receipt for Job '{job_id}' (TBC #{tbc_job_number})...")
-    logging.info(f"📧 [EMAIL RECIPIENT] Target: {recipient_email}")
-
+    logging.info(f"[EMAIL DISPATCH] Preparing receipt for Job '{job_id}' (TBC #{tbc_job_number})...")
+    
     try:
-        # Formatted receipt payload
         email_body = (
             f"Dispatch Completion Receipt\n"
             f"---------------------------\n"
@@ -1696,17 +1732,165 @@ def send_dispatch_receipt_email(job_id: str, receipt_data: Dict[str, Any]) -> bo
             f"TBC Job Number: {tbc_job_number}\n"
             f"Summary: {summary}\n"
         )
-        logging.info(f"🎉 [EMAIL SUCCESS] Receipt delivered successfully to '{recipient_email}'.")
+        logging.info(f"[EMAIL SUCCESS] Receipt delivered successfully to '{recipient_email}'.")
         return True
     except Exception as e:
-        logging.error(f"❌ [EMAIL FAILED] Failed sending receipt to '{recipient_email}': {e}")
+        logging.error(f"[EMAIL FAILED] Failed sending receipt to '{recipient_email}': {e}")
         return False
+
+========================================
+FILE: src\backend\export_master_schema_matrix.py
+========================================
+
+"""
+src/backend/export_master_schema_matrix.py
+Utility script that inspects all 16 SQLite tables and compares field labels
+against Cloud Firestore collections, exporting a unified CSV matrix spreadsheet.
+"""
+
+import os
+import sys
+import csv
+import sqlite3
+import logging
+
+# Dynamically add project root directory to Python path
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.dirname(CURRENT_DIR)
+ROOT_DIR = os.path.dirname(SRC_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
+
+from src.backend.db_manager import local_db, db as firestore_db
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Explicit mapping between SQLite tables and Cloud Firestore collections
+COLLECTION_MAP = {
+    "intake_requests": "intake_ledger",
+    "dispatches": "dispatches",
+    "projects": "projects",
+    "assets": "assets",
+    "users": "users",
+    "locations": "locations",
+    "contractors": "contractors"
+}
+
+
+def export_master_schema_matrix():
+    """Extracts SQLite schemas and Firestore keys, writing a unified CSV spreadsheet."""
+    output_filename = os.path.join(ROOT_DIR, "fieldflow_master_schema_matrix.csv")
+    logging.info(f"Starting schema matrix extraction to: {output_filename}")
+    
+    # -------------------------------------------------------------------------
+    # 1. PARSE LOCAL SQLITE SCHEMAS
+    # -------------------------------------------------------------------------
+    sqlite_schema = {}
+    try:
+        with local_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            for table in tables:
+                cursor.execute(f"PRAGMA table_info({table});")
+                cols = cursor.fetchall()
+                
+                cursor.execute(f"PRAGMA foreign_key_list({table});")
+                fks = cursor.fetchall()
+                
+                fk_map = {fk[3]: f"{fk[2]}({fk[4]})" for fk in fks}
+                
+                sqlite_schema[table] = []
+                for col in cols:
+                    col_name = col[1]
+                    col_type = col[2]
+                    is_pk = bool(col[5])
+                    fk_ref = fk_map.get(col_name, "N/A")
+                    
+                    key_role = "Primary Key" if is_pk else ("Foreign Key" if fk_ref != "N/A" else "Standard Column")
+                    sqlite_schema[table].append({
+                        "name": col_name,
+                        "type": col_type,
+                        "role": key_role,
+                        "fk_ref": fk_ref
+                    })
+        logging.info(f"Parsed {len(sqlite_schema)} SQLite tables successfully.")
+    except Exception as e:
+        logging.error(f"Failed to parse SQLite schema: {e}")
+        return
+
+    # -------------------------------------------------------------------------
+    # 2. SAMPLE CLOUD FIRESTORE COLLECTIONS
+    # -------------------------------------------------------------------------
+    firestore_keys = {}
+    if firestore_db is not None:
+        logging.info("Cloud Firestore client online. Sampling collection documents...")
+        for sqlite_table, collection_name in COLLECTION_MAP.items():
+            try:
+                docs = list(firestore_db.collection(collection_name).limit(1).stream())
+                if docs:
+                    doc_data = docs[0].to_dict()
+                    firestore_keys[collection_name] = set(doc_data.keys())
+                else:
+                    firestore_keys[collection_name] = set()
+            except Exception as err:
+                logging.warning(f"Could not sample Firestore collection '{collection_name}': {err}")
+                firestore_keys[collection_name] = set()
+    else:
+        logging.warning("Firestore client offline. CSV will populate local SQLite keys.")
+
+    # -------------------------------------------------------------------------
+    # 3. WRITE UNIFIED MASTER MATRIX TO CSV
+    # -------------------------------------------------------------------------
+    try:
+        with open(output_filename, "w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow([
+                "Database Layer",
+                "Table / Collection Name",
+                "Field / Column Name",
+                "Data Type",
+                "Key Role",
+                "Foreign Key Reference",
+                "Firestore Equivalent Collection",
+                "Parity Match Status"
+            ])
+            
+            for table, cols in sqlite_schema.items():
+                target_collection = COLLECTION_MAP.get(table, "N/A (Local Only)")
+                fs_set = firestore_keys.get(target_collection, set())
+                
+                for col in cols:
+                    c_name = col["name"]
+                    
+                    if target_collection == "N/A (Local Only)":
+                        parity = "Local SQLite Table Only"
+                    elif c_name in fs_set or (c_name == "request_id" and "request_id" in fs_set):
+                        parity = "1-to-1 Match"
+                    elif fs_set:
+                        parity = "Missing in Firestore Sample"
+                    else:
+                        parity = "Firestore Collection Empty / Unsampled"
+
+                    writer.writerow([
+                        "SQLite",
+                        table,
+                        c_name,
+                        col["type"],
+                        col["role"],
+                        col["fk_ref"],
+                        target_collection,
+                        parity
+                    ])
+
+        logging.info(f"🎉 Master Schema Spreadsheet generated at: {output_filename}")
+    except Exception as e:
+        logging.error(f"Failed to write CSV file: {e}")
 
 
 if __name__ == "__main__":
-    print("Testing Email Service Module...")
-    test_email = get_sales_rep_email_for_dispatch("JOB-TEST")
-    print(f"Resolved Email: {test_email}")
+    export_master_schema_matrix()
 
 ========================================
 FILE: src\backend\folder_gate.py
@@ -1791,7 +1975,7 @@ Enforces business logic, state transitions, user permissions, and form validatio
 
 import re
 from typing import Tuple, Dict, Any, List
-from src.backend.db_manager import local_db
+from src.backend.db_manager import local_db, db as firestore_db
 
 # Valid state transitions for dispatches
 ALLOWED_TRANSITIONS = {
@@ -1808,11 +1992,15 @@ JOB_NUMBER_PATTERN = r"^\d{6}[a-zA-Z0-9]{2}$"
 
 
 def validate_project_space_exists(tbc_job_number: str) -> Tuple[bool, str]:
-    """Verifies that a project space row exists in database memory."""
+    """
+    Verifies that a project space row exists in local database memory.
+    If missing locally, checks Cloud Firestore and mirrors the record down.
+    """
     clean_job_num = str(tbc_job_number or "").strip().upper()
     if not clean_job_num:
         return False, "Job number is required to locate project space."
 
+    # 1. Check local SQLite relational storage
     try:
         with local_db.get_connection() as conn:
             cursor = conn.cursor()
@@ -1821,6 +2009,32 @@ def validate_project_space_exists(tbc_job_number: str) -> Tuple[bool, str]:
                 return True, "Project space verified in database memory."
     except Exception as err:
         return False, f"Database query error during project space check: {err}"
+
+    # 2. Fallback: Check Cloud Firestore store if not cached locally
+    if firestore_db is not None:
+        try:
+            doc = firestore_db.collection("projects").document(clean_job_num).get()
+            if doc.exists:
+                p_data = doc.to_dict() or {}
+                proj_name = p_data.get("project_name", f"Project #{clean_job_num}")
+                site_name = p_data.get("site_name", "")
+                acct_num = p_data.get("tbco_account_number", "")
+                drive_id = p_data.get("drive_id", f"FLD-GDRV-{clean_job_num}")
+                stage_val = p_data.get("stage", "In Progress")
+
+                # Mirror into local SQLite so future local queries succeed
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO projects (
+                            tbc_job_number, project_name, site_name, tbco_account_number, drive_id, stage
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, (clean_job_num, proj_name, site_name, acct_num, drive_id, stage_val))
+                    conn.commit()
+
+                return True, "Project space verified and synchronized from Cloud Store."
+        except Exception as err:
+            return False, f"Cloud Store query error during project space check: {err}"
 
     return False, "Rule Violation: Project space must be created before submitting a service request."
 
@@ -1881,9 +2095,7 @@ def validate_user_role_permission(user_email: str, required_action: str) -> Tupl
             if not row:
                 return False, f"Access Denied: User '{clean_email}' not found in database."
 
-            # Convert sqlite3.Row to a standard Python dict to safely support .get() access
             user_data = dict(row)
-
             user_role = user_data.get("role")
             active_status = user_data.get("active_status", "Active")
 
@@ -1903,6 +2115,7 @@ def validate_user_role_permission(user_email: str, required_action: str) -> Tupl
         return False, f"Permission check database error: {err}"
 
     return True, "User permission granted."
+
 
 def validate_intake_form_data(form_data: Dict[str, Any]) -> Tuple[bool, str]:
     """Validates required form fields and enforces 123456XX job number formatting."""
@@ -2315,7 +2528,6 @@ FILE: src\backend\search_engine.py
 """
 src/backend/search_engine.py
 Dedicated query execution engine for Admin Portal and Mobile Suite application search views.
-Utilizes database indexes on site_name, company_name, equipment_tag, and part_description.
 """
 
 import logging
@@ -2327,8 +2539,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
     """
-    Executes a multi-table search across Projects, Contractors, Users, and Intake Requests
-    for administrative dashboard workflows. Uses indexes on site_name and company_name.
+    Executes a multi-table search across Projects, Contractors, Users, and Intake Requests.
+    Concatenates first_name and last_name for user lookups.
     """
     clean_term = str(search_term or "").strip().lower()
     if not clean_term:
@@ -2354,9 +2566,9 @@ def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
                 
                 UNION ALL
                 
-                SELECT 'User' AS category, u.user_email AS key_id, u.user_name || ' (' || u.role || ')' AS detail 
+                SELECT 'User' AS category, u.user_email AS key_id, (u.first_name || ' ' || u.last_name || ' (' || u.role || ')') AS detail 
                 FROM users u
-                WHERE LOWER(u.user_email) LIKE ? OR LOWER(u.user_name) LIKE ?
+                WHERE LOWER(u.user_email) LIKE ? OR LOWER(u.first_name || ' ' || u.last_name) LIKE ?
                 
                 UNION ALL
                 
@@ -2377,7 +2589,6 @@ def search_admin_portal(search_term: str) -> List[Dict[str, Any]]:
 def search_mobile_portal(search_term: str, tech_email: str) -> List[Dict[str, Any]]:
     """
     Executes a technician-scoped search across Dispatches, Equipment Assets, and Parts Catalog.
-    Uses indexes on equipment_tag and part_description.
     """
     clean_term = str(search_term or "").strip().lower()
     clean_tech = str(tech_email or "").strip().lower()
@@ -2417,12 +2628,6 @@ def search_mobile_portal(search_term: str, tech_email: str) -> List[Dict[str, An
             
     return results
 
-
-if __name__ == "__main__":
-    print("Testing Search Engine Module...")
-    admin_results = search_admin_portal("test")
-    print(f"Admin Search Returned {len(admin_results)} records.")
-
 ========================================
 FILE: src\backend\sync_engine.py
 ========================================
@@ -2440,7 +2645,6 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-# Configure system logging to monitor background behavior cleanly
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
@@ -2456,12 +2660,10 @@ def map_local_dispatch_to_cloud(db_client, local_row: dict) -> bool:
     job_id = local_row.get("job_id")
     tbc_job_number = local_row.get("tbc_job_number")
     
-    # Enforce strict 8-character job identifier anchor requirement
     if not tbc_job_number or len(tbc_job_number) < 8:
         logging.error(f"[SECURITY BLOCK] Rejects cloud instantiation: Invalid 8-digit job identifier.")
         return False
 
-    # Normalized Cloud Payload aligned with updated schema
     cloud_payload = {
         "job_id": job_id,
         "tbc_job_number": tbc_job_number,
@@ -2469,19 +2671,16 @@ def map_local_dispatch_to_cloud(db_client, local_row: dict) -> bool:
         "site_name": local_row.get("site_name"),
         "sales_rep_email": local_row.get("sales_rep_email"),
         "technician_email": local_row.get("technician_email"),
-        "registration_status": local_row.get("registration_status", "Registration Complete"),
+        "status": local_row.get("status", "Scheduled"),
         "last_modified_timestamp": datetime.now(timezone.utc)
     }
 
-    # --- Traffic Cop Collision Retry Loop ---
     MAX_ATTEMPTS = 3
-    
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             logging.info(f"[SYNC ATTEMPT {attempt}/{MAX_ATTEMPTS}] Sending write packet for Job {job_id}...")
-            
             db_client.collection("dispatches").document(job_id).set(cloud_payload, merge=True)
-            logging.info(f"🎉 [CLOUD SYNC SUCCESS] Document {job_id} successfully mapped to Firestore.")
+            logging.info(f"[CLOUD SYNC SUCCESS] Document {job_id} successfully mapped to Firestore.")
             return True
             
         except Exception as error_token:
@@ -2489,149 +2688,86 @@ def map_local_dispatch_to_cloud(db_client, local_row: dict) -> bool:
             logging.warning(f"Cloud write traffic conflict detected on row: {str(error_token)}")
             
             if attempt < MAX_ATTEMPTS:
-                logging.warning(f"Collision Buffer: Retrying in {jitter_delay:.2f} seconds...")
                 time.sleep(jitter_delay)
             else:
-                logging.error("Collision Buffer: Max retry attempts (3) exhausted. Shifting data safely back to fallback storage.")
+                logging.error("Collision Buffer: Max retry attempts (3) exhausted.")
                 
     return False
 
 
 def dispatch_sync_in_background(db_client, local_row: dict):
-    """
-    Detaches the cloud upload operation from the main visual screen,
-    spawning a silent background thread so the screen never freezes.
-    """
+    """Spawns an isolated background thread for dispatch cloud synchronization."""
     worker_thread = threading.Thread(
         target=map_local_dispatch_to_cloud,
         args=(db_client, local_row),
         daemon=True
     )
     worker_thread.start()
-    logging.info(f"🧵 [THREAD DEPLOYED] Asynchronous cloud sync engine engaged for Job {local_row.get('job_id', 'UNKNOWN')}.")
 
-
-def cloud_document_distribution_wrapper(job_number: str, payload: dict) -> bool:
-    """
-    Validates job numbers against company formatting standards before pushing to cloud.
-    """
-    pattern = r"^\d{6}[a-zA-Z]{2}$"
-    
-    if not job_number or not bool(re.match(pattern, job_number.strip())):
-        print(f"[SECURITY BLOCK] Rejects cloud sync instantiation for invalid token: '{job_number}'")
-        return False
-
-    print(f"[CLOUD SYNC SUCCESS] Job {job_number} approved. Passing payload to Firestore.")
-    return True
-
-
-# =========================================================================
-# INTAKE LEDGER CLOUD SYNC WRAPPER
-# =========================================================================
 
 def map_intake_to_cloud(db_client, intake_data: dict) -> bool:
     """
-    Takes a local intake request record and uploads it to the 'intake_ledger' cloud collection.
-    Includes normalized site names, account numbers, and sales emails in the cloud payload.
+    Takes a local intake request record and uploads it to the standardized 'intake_requests' cloud collection.
     """
     if db_client is None:
         logging.warning("[INTAKE CLOUD SKIP] Cloud store routing offline. Retaining intake record locally.")
         return False
 
-    intake_id = intake_data.get("intake_id") or intake_data.get("request_id")
-    if not intake_id:
-        logging.error("[SECURITY BLOCK] Cannot sync intake record without a valid intake_id.")
+    request_id = intake_data.get("request_id")
+    if not request_id:
+        logging.error("[SECURITY BLOCK] Cannot sync intake record without a valid request_id.")
         return False
 
-    # Aligned schema payload keys
     cloud_payload = {
-        "intake_id": intake_id,
-        "tbc_job_number": intake_data.get("tbc_job_number") or intake_data.get("assigned_job_number"),
-        "tbco_account_number": intake_data.get("tbco_account_number") or intake_data.get("contractor_account_number"),
-        "site_name": intake_data.get("site_name") or intake_data.get("project_site_address") or "Unspecified Location",
-        "sales_rep_email": intake_data.get("sales_rep_email") or intake_data.get("sales_team_email"),
-        "requested_date": intake_data.get("requested_date"),
-        "client_name": intake_data.get("client_name") or intake_data.get("contractor_company_name") or "Unspecified Client",
-        "contact_phone": intake_data.get("contact_phone") or intake_data.get("requestor_phone") or "",
-        "issue_description": intake_data.get("issue_description") or "No issue description provided.",
-        "intake_source": intake_data.get("intake_source") or intake_data.get("request_source") or "WEB_FORM",
-        "status": intake_data.get("status") or intake_data.get("triage_status") or "PENDING_TRIAGE",
-        "created_at": intake_data.get("created_at") or intake_data.get("submission_timestamp") or datetime.now(timezone.utc).isoformat(),
-        "created_by": intake_data.get("created_by") or intake_data.get("requestor_email") or "SYSTEM",
+        "request_id": request_id,
+        "tbc_job_number": intake_data.get("tbc_job_number"),
+        "team_code": intake_data.get("team_code"),
+        "site_name": intake_data.get("site_name"),
+        "project_name": intake_data.get("project_name"),
+        "contractor_company_name": intake_data.get("contractor_company_name"),
+        "street_address_1": intake_data.get("street_address_1"),
+        "street_address_2": intake_data.get("street_address_2"),
+        "city": intake_data.get("city"),
+        "state": intake_data.get("state"),
+        "postal_code": intake_data.get("postal_code"),
+        "country": intake_data.get("country", "US"),
+        "sales_rep_email": intake_data.get("sales_rep_email"),
+        "sales_rep_phone": intake_data.get("sales_rep_phone"),
+        "project_site_contact_first_name": intake_data.get("project_site_contact_first_name"),
+        "project_site_contact_last_name": intake_data.get("project_site_contact_last_name"),
+        "project_site_contact_email": intake_data.get("project_site_contact_email"),
+        "project_site_contact_phone": intake_data.get("project_site_contact_phone"),
+        "issue_description": intake_data.get("issue_description"),
+        "triage_status": intake_data.get("triage_status", "Unassigned"),
+        "request_type": intake_data.get("request_type", "VFD Startup"),
+        "submission_timestamp": intake_data.get("submission_timestamp", datetime.now(timezone.utc).isoformat()),
         "last_modified_timestamp": datetime.now(timezone.utc)
     }
 
     MAX_ATTEMPTS = 3
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            logging.info(f"☁️ [INTAKE CLOUD SYNC {attempt}/{MAX_ATTEMPTS}] Syncing intake {intake_id} to Firestore...")
-            db_client.collection("intake_ledger").document(intake_id).set(cloud_payload, merge=True)
-            logging.info(f"🎉 [INTAKE CLOUD SUCCESS] Document {intake_id} mapped to cloud intake_ledger.")
+            logging.info(f"[INTAKE CLOUD SYNC {attempt}/{MAX_ATTEMPTS}] Syncing intake {request_id} to Firestore...")
+            db_client.collection("intake_requests").document(request_id).set(cloud_payload, merge=True)
+            logging.info(f"[INTAKE CLOUD SUCCESS] Document {request_id} mapped to collection intake_requests.")
             return True
         except Exception as error_token:
             jitter_delay = random.uniform(0.5, 1.5)
-            logging.warning(f"⚠️ [INTAKE SYNC CONFLICT] Write conflict on intake {intake_id}: {error_token}")
+            logging.warning(f"[INTAKE SYNC CONFLICT] Write conflict on intake {request_id}: {error_token}")
             if attempt < MAX_ATTEMPTS:
                 time.sleep(jitter_delay)
-            else:
-                logging.error(f"❌ [INTAKE SYNC EXHAUSTED] Max retries reached for intake {intake_id}. Retained locally.")
 
     return False
 
 
 def sync_intake_in_background(db_client, intake_data: dict):
-    """
-    Detaches the cloud intake upload operation from the UI screen,
-    running it silently in the background so office staff experience zero lag.
-    """
+    """Detaches cloud intake upload operation into an isolated background thread."""
     worker_thread = threading.Thread(
         target=map_intake_to_cloud,
         args=(db_client, intake_data),
         daemon=True
     )
     worker_thread.start()
-    logging.info(f"🧵 [INTAKE THREAD] Background sync worker engaged for Intake {intake_data.get('intake_id', 'UNKNOWN')}.")
-
-
-def sync_intake_to_cloud(db_client, intake_id: str, new_status: str, assigned_job_number: Optional[str] = None, requested_date: Optional[str] = None) -> bool:
-    """
-    Updates status, assigned job number, and requested date of an intake document in Cloud Firestore.
-    """
-    if db_client is None:
-        logging.warning(f"⚠️ [CLOUD SYNC SKIP] Cloud client offline. Skipping Firestore sync for intake '{intake_id}'.")
-        return False
-
-    try:
-        doc_ref = db_client.collection("intake_ledger").document(intake_id)
-
-        update_payload = {
-            "status": new_status,
-            "assigned_job_number": assigned_job_number,
-            "last_modified_timestamp": datetime.now(timezone.utc)
-        }
-        if requested_date is not None:
-            update_payload["requested_date"] = requested_date
-
-        doc_ref.set(update_payload, merge=True)
-        logging.info(f"☁️ [CLOUD INTAKE SYNC SUCCESS] Intake '{intake_id}' updated in Firestore (Status: {new_status}, Job #: {assigned_job_number}).")
-        return True
-
-    except Exception as e:
-        logging.error(f"❌ [CLOUD INTAKE SYNC ERROR] Failed to sync intake '{intake_id}' to Firestore: {e}")
-        return False
-
-
-def dispatch_intake_sync_in_background(db_client, intake_id: str, new_status: str, assigned_job_number: Optional[str] = None, requested_date: Optional[str] = None):
-    """
-    Spawns an isolated background thread to handle cloud status updates silently.
-    """
-    worker_thread = threading.Thread(
-        target=sync_intake_to_cloud,
-        args=(db_client, intake_id, new_status, assigned_job_number, requested_date),
-        daemon=True
-    )
-    worker_thread.start()
-    logging.info(f"🧵 [THREAD DEPLOYED] Asynchronous background intake sync engaged for record '{intake_id}'.")
 
 ========================================
 FILE: src\backend\template_factory.py

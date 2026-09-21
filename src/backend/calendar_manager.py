@@ -9,6 +9,34 @@ from src.backend.db_manager import local_db, db as firestore_db
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
+def build_gcal_ticket_description(ticket_data: dict) -> str:
+    """Formats structured key-value pairs for Google Calendar event descriptions."""
+    job_type = ticket_data.get("request_type") or ticket_data.get("job_type") or "VFD Startup"
+    project_name = ticket_data.get("project_name") or "Service Project"
+    contractor = ticket_data.get("contractor_company_name") or "Valued Client"
+
+    sc_first = ticket_data.get("project_site_contact_first_name") or ""
+    sc_last = ticket_data.get("project_site_contact_last_name") or ""
+    sc_name = f"{sc_first} {sc_last}".strip() or "N/A"
+    sc_phone = ticket_data.get("project_site_contact_phone") or "N/A"
+
+    rb_first = ticket_data.get("sales_rep_first_name") or ""
+    rb_last = ticket_data.get("sales_rep_last_name") or ""
+    rb_name = f"{rb_first} {rb_last}".strip() or ticket_data.get("sales_rep_email") or "Sales Representative"
+    rb_phone = ticket_data.get("sales_rep_phone") or "N/A"
+
+    issue_desc = ticket_data.get("issue_description") or "Service Request Dispatch"
+
+    return (
+        f"JOB TYPE: {job_type}\n"
+        f"PROJECT: {project_name}\n"
+        f"CONTRACTOR: {contractor}\n"
+        f"SITE CONTACT: {sc_name}, {sc_phone}\n"
+        f"REQUESTED BY: {rb_name}, {rb_phone}\n\n"
+        f"DESCRIPTION: {issue_desc}"
+    )
+
+
 class GoogleCalendarManager:
     """Handles formatting and publishing appointment entries to Google Calendar safely."""
 

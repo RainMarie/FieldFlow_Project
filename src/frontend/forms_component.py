@@ -736,6 +736,9 @@ def build_service_intake_form(
         page.overlay.append(docs_picker)
 
     def populate_data(proj_data: dict):
+        if get_tech_options_fn:
+            dd_technician.options = get_tech_options_fn()
+
         if not isinstance(proj_data, dict):
             return
 
@@ -773,6 +776,9 @@ def build_service_intake_form(
             page.update()
 
     def clear_form(e=None):
+        if get_tech_options_fn:
+            dd_technician.options = get_tech_options_fn()
+
         tf_sales_first.value = ""
         tf_sales_last.value = ""
         tf_sales_email.value = ""
@@ -867,6 +873,8 @@ def build_service_intake_form(
             "country": tf_country.value.strip() if tf_country.value else "US",
             "sales_rep_email": sales_email_val,
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
+            "sales_rep_first_name": tf_sales_first.value.strip() if tf_sales_first.value else "",
+            "sales_rep_last_name": tf_sales_last.value.strip() if tf_sales_last.value else "",
             "project_site_contact_first_name": tf_contact_first.value.strip() if tf_contact_first.value else "",
             "project_site_contact_last_name": tf_contact_last.value.strip() if tf_contact_last.value else "",
             "project_site_contact_email": tf_contact_email.value.strip().lower() if tf_contact_email.value else "",
@@ -908,6 +916,28 @@ def build_service_intake_form(
                         VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
                     """, (job_id, intake_payload["tbc_job_number"], dd_technician.value, sales_email_val, tf_scheduled_time.value.strip(), intake_payload["request_type"]))
 
+                    # GOOGLE CALENDAR SYNC
+                    try:
+                        from src.backend.calendar_manager import GoogleCalendarManager, build_gcal_ticket_description
+                        cal_manager = GoogleCalendarManager()
+                        
+                        full_address = f"{intake_payload['street_address_1']}, {intake_payload['city']}, {intake_payload['state']} {intake_payload['postal_code']}".strip(", ")
+                        rich_desc = build_gcal_ticket_description(intake_payload)
+                        sched_date = tf_scheduled_time.value.strip()
+                        start_iso = f"{sched_date[:10]}T08:00:00Z" if len(sched_date) >= 10 else f"{time.strftime('%Y-%m-%d')}T08:00:00Z"
+                        end_iso = f"{sched_date[:10]}T12:00:00Z" if len(sched_date) >= 10 else f"{time.strftime('%Y-%m-%d')}T12:00:00Z"
+                        
+                        cal_manager.publish_appointment(
+                            job_id=job_id,
+                            summary=f"Job #{intake_payload['tbc_job_number']} - {intake_payload['project_name']}",
+                            location=full_address,
+                            description=rich_desc,
+                            start_iso=start_iso,
+                            end_iso=end_iso
+                        )
+                    except Exception as cal_err:
+                        logging.warning(f"Google Calendar sync deferred: {cal_err}")
+
                 conn.commit()
         except Exception as sql_err:
             logging.error(f"SQLite intake insert error: {sql_err}")
@@ -938,7 +968,7 @@ def build_service_intake_form(
             contractor_instructions_note,
             ft.Row([tf_company, tf_company_acct], spacing=10),
             
-            # Company Project Manager Section
+            # Company PM Section
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             ft.Row([tf_pm_first, tf_pm_last], spacing=10),
             ft.Row([tf_pm_email, tf_pm_phone], spacing=10),
@@ -963,8 +993,7 @@ def build_service_intake_form(
                 ft.OutlinedButton("Upload Files", style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True)),
                 docs_status_txt
             ], spacing=10),
-            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
-            ft.ElevatedButton("Create Service Request", style=FieldFlowLightTheme.get_primary_button_style(), on_click=submit_service_request)
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10)
         ], spacing=10, scroll=ft.ScrollMode.AUTO, tight=True),
         padding=10
     )

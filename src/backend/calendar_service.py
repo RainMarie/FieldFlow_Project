@@ -27,7 +27,8 @@ class GoogleCalendarService:
         try:
             creds_dict = json.loads(raw_creds)
             credentials = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
-            return build('calendar', 'v3', credentials=credentials)
+            # Passing cache_discovery=False prevents file_cache warning logs and eliminates network discovery delays
+            return build('calendar', 'v3', credentials=credentials, cache_discovery=False)
         except Exception as e:
             logging.error(f"Failed to build Google Calendar service client: {e}")
             return None
