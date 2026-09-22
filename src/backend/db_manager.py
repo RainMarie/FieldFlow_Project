@@ -101,7 +101,7 @@ class WebSafeCredentialManager:
 
 
 class LocalDatabaseManager:
-    """Manages the local SQLite relational layer in WAL mode across 16 normalized schemas."""
+    """Manages the local SQLite relational layer in WAL mode across normalized schemas."""
     def __init__(self, db_path: str = "tbc_local.db"):
         self.db_path = os.path.join(CURRENT_DIR, db_path)
         self.init_sqlite_schema()
@@ -114,7 +114,7 @@ class LocalDatabaseManager:
         return conn
 
     def init_sqlite_schema(self):
-        """Initializes all 16 normalized schemas sequentially."""
+        """Initializes all normalized schemas sequentially."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
@@ -205,7 +205,7 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # 8. PROJECTS
+            # 8. PROJECTS (UPDATED: Added po_number column)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     tbc_job_number TEXT PRIMARY KEY,
@@ -213,6 +213,7 @@ class LocalDatabaseManager:
                     tbco_account_number TEXT,
                     pm_contact_id TEXT,
                     project_name TEXT,
+                    po_number TEXT,
                     drive_id TEXT,
                     stage TEXT DEFAULT 'Active',
                     FOREIGN KEY(site_name) REFERENCES locations(site_name) ON UPDATE CASCADE ON DELETE SET NULL,
@@ -220,6 +221,12 @@ class LocalDatabaseManager:
                     FOREIGN KEY(pm_contact_id) REFERENCES contacts(contact_id) ON DELETE SET NULL
                 );
             """)
+
+            # Dynamic Migration Check for Existing Database File
+            cursor.execute("PRAGMA table_info(projects);")
+            existing_cols = [row[1] for row in cursor.fetchall()]
+            if "po_number" not in existing_cols:
+                cursor.execute("ALTER TABLE projects ADD COLUMN po_number TEXT;")
 
             # 9. INTAKE REQUESTS
             cursor.execute("""
@@ -369,7 +376,7 @@ class LocalDatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_parts_sku ON parts_master(sku);")
 
             conn.commit()
-        logging.info("Local SQLite Database Engine initialized across 16 relational tables.")
+        logging.info("Local SQLite Database Engine initialized across normalized tables.")
 
 
 cred_manager = WebSafeCredentialManager()
@@ -617,7 +624,6 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "submission_timestamp": submission_time
     }
 
-    # Step 1: Local-First Save to SQLite (guarantees offline availability)
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN TRANSACTION;")
@@ -635,9 +641,7 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
 
         conn.commit()
 
-    # Step 2: Asynchronous Cloud Sync Trigger
     sync_engine.sync_intake_in_background(db, standardized_payload)
-
     return req_id
 
 
@@ -651,7 +655,6 @@ def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_ti
 
         job_id = f"JOB-{uuid.uuid4().hex[:8].upper()}"
         
-        # Step 1: Local-First Write to SQLite
         cursor.execute("""
             INSERT INTO dispatches (job_id, tbc_job_number, technician_email, sales_rep_email, scheduled_time, status, job_type)
             VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
@@ -668,9 +671,7 @@ def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_ti
             "job_type": job_type
         }
 
-        # Step 2: Asynchronous Cloud Sync Trigger
         sync_engine.dispatch_sync_in_background(db, dispatch_payload)
-
         return dispatch_payload
 
 
