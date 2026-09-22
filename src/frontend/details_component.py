@@ -1,6 +1,7 @@
 """
 src/frontend/details_component.py
-Consolidated detail modal views for FieldFlow using standardized key names.
+Consolidated detail modal views for FieldFlow using standardized key names
+and a tabbed multi-view project card layout (Vitals, Requests, Assets, Dispatches).
 """
 
 import os
@@ -23,6 +24,10 @@ from src.backend.db_manager import (
     db as firestore_db,
     resolve_sales_user
 )
+from src.frontend.cards_component import (
+    build_site_asset_card,
+    build_visit_history_card
+)
 from src.frontend.shared_utils import find_any_local_logo, get_base64_from_file, show_toast
 
 VALID_TEAM_CODES = [
@@ -33,6 +38,7 @@ VALID_TEAM_CODES = [
 
 
 def build_image_control(photo_url_or_path: str, height: int = 180) -> ft.Control:
+    """Renders network images, local disk images, or fallback brand containers."""
     val = (photo_url_or_path or "").strip()
     if val.startswith("http://") or val.startswith("https://"):
         return ft.Image(src=val, height=height, fit=ft.ImageFit.COVER, border_radius=6)
@@ -72,6 +78,10 @@ def build_project_detail_modal(
     on_save_callback=None,
     on_delete_callback=None
 ):
+    """
+    Renders an interactive, tabbed Project Detail Modal displaying Core Vitals,
+    associated Service Requests, Site Assets, and Field Dispatches.
+    """
     active_project_state = {"tbc_job_number": None, "drive_id": None}
 
     def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):
@@ -80,6 +90,7 @@ def build_project_detail_modal(
             padding=ft.padding.only(top=8, bottom=2)
         )
 
+    # Form Fields for Tab 1: Project Vitals
     edit_project_job_num = ft.TextField(label="TBCo Job #*", read_only=True, border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_project_name = ft.TextField(label="Project Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_stage = ft.Dropdown(
@@ -118,6 +129,11 @@ def build_project_detail_modal(
     photo_status_txt = ft.Text("No Custom Picture Selected", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
     docs_status_txt = ft.Text("No Staged Documents", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
 
+    # Containers for Dynamic Tabs (Tabs 2, 3, & 4)
+    requests_list_view = ft.Column(spacing=8, scroll=ft.ScrollMode.ALWAYS)
+    assets_list_view = ft.Column(spacing=8, scroll=ft.ScrollMode.ALWAYS)
+    dispatches_list_view = ft.Column(spacing=8, scroll=ft.ScrollMode.ALWAYS)
+
     def on_photo_picked(e: ft.FilePickerResultEvent):
         if e.files:
             selected_file = e.files[0]
@@ -144,6 +160,7 @@ def build_project_detail_modal(
         page.overlay.append(docs_picker)
 
     def populate_project_data(proj_data, contractor_options=None, location_options=None, sales_options=None):
+        """Populates Vitals form and queries related SQLite records for Requests, Assets, and Dispatches."""
         if isinstance(proj_data, dict):
             job_num = proj_data.get("tbc_job_number", "")
             proj_name = proj_data.get("project_name", "")
@@ -172,6 +189,7 @@ def build_project_detail_modal(
         active_project_state["tbc_job_number"] = job_num
         active_project_state["drive_id"] = drive_val
 
+        # Populate Tab 1 Inputs
         edit_project_job_num.value = str(job_num or "")
         edit_project_name.value = str(proj_name or "")
         edit_company_name.value = str(client or "")
@@ -199,6 +217,86 @@ def build_project_detail_modal(
         else:
             photo_status_txt.value = "No Custom Picture Selected"
             photo_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
+
+        # Query Local Database for Tabs 2, 3, & 4
+        if job_num:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+
+                    # Query 1: Service Requests
+                    cursor.execute("""
+                        SELECT request_id, request_type, triage_status, issue_description, submission_timestamp
+                        FROM intake_requests
+                        WHERE tbc_job_number = ?
+                        ORDER BY submission_timestamp DESC
+                    """, (job_num,))
+                    req_rows = [dict(r) for r in cursor.fetchall()]
+
+                    # Query 2: Assets
+                    cursor.execute("""
+                        SELECT asset_id, equipment_tag, model_number, serial_number, operational_status
+                        FROM assets
+                        WHERE tbc_job_number = ?
+                    """, (job_num,))
+                    asset_rows = [dict(r) for r in cursor.fetchall()]
+
+                    # Query 3: Dispatches
+                    cursor.execute("""
+                        SELECT job_id, technician_email, scheduled_time, status, job_type
+                        FROM dispatches
+                        WHERE tbc_job_number = ?
+                        ORDER BY scheduled_time DESC
+                    """, (job_num,))
+                    dispatch_rows = [dict(r) for r in cursor.fetchall()]
+
+                # Populate Tab 2: Service Requests List
+                requests_list_view.controls.clear()
+                if req_rows:
+                    for req in req_rows:
+                        requests_list_view.controls.append(
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Row([
+                                        ft.Text(f"Request #{req.get('request_id', 'N/A')}", weight=ft.FontWeight.BOLD, size=13, color=FieldFlowLightTheme.TEXT_PRIMARY),
+                                        ft.Text(req.get("triage_status", "Unassigned"), size=11, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE)
+                                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                                    ft.Text(f"Type: {req.get('request_type', 'General')}  |  Date: {str(req.get('submission_timestamp', ''))[:10]}", size=11, color=FieldFlowLightTheme.TEXT_MUTED),
+                                    ft.Text(f"Issue: {req.get('issue_description', 'N/A')}", size=11, color=FieldFlowLightTheme.TEXT_PRIMARY)
+                                ], spacing=3),
+                                bgcolor=FieldFlowLightTheme.SURFACE_HOVER,
+                                padding=10,
+                                border_radius=6,
+                                border=ft.border.all(1, FieldFlowLightTheme.BORDER_SUBTLE)
+                            )
+                        )
+                else:
+                    requests_list_view.controls.append(
+                        ft.Text("No service requests found for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
+                    )
+
+                # Populate Tab 3: Assets List
+                assets_list_view.controls.clear()
+                if asset_rows:
+                    for ast in asset_rows:
+                        assets_list_view.controls.append(build_site_asset_card(ast))
+                else:
+                    assets_list_view.controls.append(
+                        ft.Text("No registered assets found for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
+                    )
+
+                # Populate Tab 4: Dispatches List
+                dispatches_list_view.controls.clear()
+                if dispatch_rows:
+                    for disp in dispatch_rows:
+                        dispatches_list_view.controls.append(build_visit_history_card(disp))
+                else:
+                    dispatches_list_view.controls.append(
+                        ft.Text("No field dispatches scheduled for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
+                    )
+
+            except Exception as sql_err:
+                logging.error(f"Error populating project detail modal sub-tabs: {sql_err}")
 
     def save_project_detail_edits(e):
         if not edit_project_job_num.value or not edit_project_name.value or not edit_company_name.value or not edit_site_name.value or not edit_street_1.value or not edit_city.value or not edit_state.value:
@@ -311,7 +409,6 @@ def build_project_detail_modal(
                 except Exception as fs_err:
                     logging.error(f"Firestore project update error: {fs_err}")
 
-            # Step 7: Success notification & parent card callback execution
             show_toast(page, f"Project #{job_num} Master Record Saved!", kind="success")
             project_detail_modal_dialog.open = False
             page.update()
@@ -323,39 +420,58 @@ def build_project_detail_modal(
             logging.error(f"SQLite project detail save error: {sql_err}")
             show_toast(page, f"Save Failed: {str(sql_err)}", kind="error")
 
+    # Tab 1 View: Form Container
+    vitals_tab_content = ft.Container(
+        padding=ft.padding.only(left=8, right=16, top=8, bottom=8),
+        content=ft.Column([
+            build_section_header("1. Core Project Vitals"),
+            ft.Row([edit_project_job_num, edit_project_name], spacing=10),
+            ft.Row([edit_stage, edit_drive_id], spacing=10),
+
+            build_section_header("2. Contractor & Client Details"),
+            ft.Row([edit_company_name, edit_company_acct], spacing=10),
+
+            build_section_header("3. Site Location & Address Details"),
+            ft.Row([edit_site_name], spacing=10),
+            ft.Row([edit_street_1, edit_street_2], spacing=10),
+            ft.Row([edit_city, edit_state, edit_postal_code, edit_country], spacing=8),
+
+            build_section_header("4. Project Site Contact"),
+            ft.Row([edit_pm_first_name, edit_pm_last_name], spacing=10),
+            ft.Row([edit_pm_email, edit_pm_phone], spacing=10),
+
+            build_section_header("5. Project Media & Attachments", color_token=FieldFlowLightTheme.PRIMARY_GREEN),
+            ft.Row([
+                ft.OutlinedButton("Upload Photo", icon=ft.icons.IMAGE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: photo_picker.pick_files(allow_multiple=False)),
+                ft.OutlinedButton("Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True))
+            ], spacing=10),
+            ft.Row([photo_status_txt]),
+            ft.Row([docs_status_txt])
+        ], spacing=10, scroll=ft.ScrollMode.ALWAYS)
+    )
+
+    # Multi-Tab Layout Construction
+    modal_tabs = ft.Tabs(
+        selected_index=0,
+        animation_duration=200,
+        tabs=[
+            ft.Tab(text="Project Vitals", content=vitals_tab_content),
+            ft.Tab(text="Service Requests", content=ft.Container(padding=10, content=requests_list_view)),
+            ft.Tab(text="Site Assets", content=ft.Container(padding=10, content=assets_list_view)),
+            ft.Tab(text="Dispatches", content=ft.Container(padding=10, content=dispatches_list_view)),
+        ],
+        expand=True
+    )
+
     project_detail_modal_dialog = ft.AlertDialog(
         bgcolor=FieldFlowLightTheme.SURFACE_CARD,
         title=ft.Row([
             ft.Icon(ft.icons.BUSINESS, color=FieldFlowLightTheme.PINK_PRIMARY, size=26),
-            ft.Text("Editable Project Master Record & Vitals", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
+            ft.Text("Project Master Record & Activity Hub", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
         ]),
         content=ft.Container(
-            width=760, height=580, padding=ft.padding.only(left=12, right=20, top=10, bottom=10),
-            content=ft.Column([
-                build_section_header("1. Core Project Vitals"),
-                ft.Row([edit_project_job_num, edit_project_name], spacing=10),
-                ft.Row([edit_stage, edit_drive_id], spacing=10),
-
-                build_section_header("2. Contractor & Client Details"),
-                ft.Row([edit_company_name, edit_company_acct], spacing=10),
-
-                build_section_header("3. Site Location & Address Details"),
-                ft.Row([edit_site_name], spacing=10),
-                ft.Row([edit_street_1, edit_street_2], spacing=10),
-                ft.Row([edit_city, edit_state, edit_postal_code, edit_country], spacing=8),
-
-                build_section_header("4. Project Site Contact"),
-                ft.Row([edit_pm_first_name, edit_pm_last_name], spacing=10),
-                ft.Row([edit_pm_email, edit_pm_phone], spacing=10),
-
-                build_section_header("5. Project Media & Attachments", color_token=FieldFlowLightTheme.PRIMARY_GREEN),
-                ft.Row([
-                    ft.OutlinedButton("Upload Photo", icon=ft.icons.IMAGE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: photo_picker.pick_files(allow_multiple=False)),
-                    ft.OutlinedButton("Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True))
-                ], spacing=10),
-                ft.Row([photo_status_txt]),
-                ft.Row([docs_status_txt])
-            ], spacing=10, scroll=ft.ScrollMode.ALWAYS)
+            width=760, height=580, padding=ft.padding.all(6),
+            content=modal_tabs
         ),
         actions=[
             ft.TextButton("Cancel", on_click=lambda _: [setattr(project_detail_modal_dialog, 'open', False), page.update()]),
