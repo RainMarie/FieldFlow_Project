@@ -1,3 +1,9 @@
+"""
+src/backend/drive_service.py
+Google Drive integration module for FieldFlow. Handles Shared Drive folder provisioning,
+file uploads with automatic thumbnail permission assignment, and receipt email notifications.
+"""
+
 import os
 import json
 import logging
@@ -124,14 +130,17 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
         }
 
 
-def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[str]:
-    """Uploads local files into the specified Google Drive folder."""
+def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[Dict[str, Any]]:
+    """
+    Uploads local files into the specified Google Drive folder, applies public view permissions,
+    and returns detailed file metadata including direct streamable thumbnail URLs.
+    """
     service = get_drive_service()
-    uploaded_file_ids = []
+    uploaded_files = []
 
     if not service or not folder_id or folder_id.startswith("FLD-"):
         logging.warning("Drive service or valid Folder ID unavailable. Skipping upload.")
-        return uploaded_file_ids
+        return uploaded_files
 
     for path in file_paths:
         if os.path.exists(path) and os.path.isfile(path):
@@ -142,16 +151,39 @@ def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[
                 uploaded_file = service.files().create(
                     body=file_metadata,
                     media_body=media,
-                    fields='id',
+                    fields='id, webViewLink',
                     supportsAllDrives=True
                 ).execute()
 
-                uploaded_file_ids.append(uploaded_file.get('id'))
-                logging.info(f"Uploaded '{filename}' to Drive Folder ID '{folder_id}'.")
+                file_id = uploaded_file.get('id')
+                web_link = uploaded_file.get('webViewLink')
+
+                # Grant public reader permission so Flet can stream direct thumbnail images
+                try:
+                    file_permission = {'type': 'anyone', 'role': 'reader'}
+                    service.permissions().create(
+                        fileId=file_id,
+                        body=file_permission,
+                        fields='id',
+                        supportsAllDrives=True
+                    ).execute()
+                except Exception as perm_err:
+                    logging.warning(f"Note: File permission grant skipped: {perm_err}")
+
+                direct_photo_url = f"https://lh3.googleusercontent.com/d/{file_id}"
+
+                uploaded_files.append({
+                    "file_id": file_id,
+                    "web_view_link": web_link,
+                    "photo_url": direct_photo_url,
+                    "file_name": filename
+                })
+
+                logging.info(f"Uploaded '{filename}' to Drive Folder ID '{folder_id}' (File ID: {file_id}).")
             except Exception as e:
                 logging.error(f"Failed to upload file '{path}' to Drive: {e}")
 
-    return uploaded_file_ids
+    return uploaded_files
 
 
 def send_receipt_email_with_drive_link(
@@ -216,14 +248,15 @@ def process_new_service_request_submittal(
     requestor_name: str,
     requestor_email: str,
     attached_file_paths: Optional[List[str]] = None
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Master pipeline wrapper: creates folder, uploads files, and emails receipt."""
     drive_info = create_project_drive_folder(job_number, project_name)
     drive_id = drive_info["drive_id"]
     drive_url = drive_info["drive_url"]
 
+    uploaded_files = []
     if attached_file_paths:
-        upload_files_to_drive_folder(drive_id, attached_file_paths)
+        uploaded_files = upload_files_to_drive_folder(drive_id, attached_file_paths)
 
     send_receipt_email_with_drive_link(
         requestor_email=requestor_email,
@@ -233,6 +266,8 @@ def process_new_service_request_submittal(
         drive_url=drive_url
     )
 
+    drive_info["uploaded_files"] = uploaded_files
+    drive_info["photo_url"] = uploaded_files[0]["photo_url"] if uploaded_files else ""
     return drive_info
 
 
@@ -243,7 +278,7 @@ def ensure_project_drive_folder(
     requestor_email: str = "",
     attached_file_paths: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Check-and-Reuse Drive folder pipeline."""
+    """Check-and-Reuse Drive folder pipeline with structured upload photo URL returning."""
     clean_job_num = job_number.strip().upper()
     existing_drive_id = None
 
@@ -259,14 +294,22 @@ def ensure_project_drive_folder(
 
     if existing_drive_id:
         logging.info(f"Reusing Drive folder for Job #{clean_job_num} ({existing_drive_id}).")
+        uploaded_files = []
         if attached_file_paths:
-            upload_files_to_drive_folder(existing_drive_id, attached_file_paths)
+            uploaded_files = upload_files_to_drive_folder(existing_drive_id, attached_file_paths)
 
         existing_drive_url = f"https://drive.google.com/drive/folders/{existing_drive_id}"
         if requestor_email:
             send_receipt_email_with_drive_link(requestor_email, requestor_name, clean_job_num, project_name, existing_drive_url)
 
-        return {"drive_id": existing_drive_id, "drive_url": existing_drive_url, "is_new_folder": False}
+        main_photo_url = uploaded_files[0]["photo_url"] if uploaded_files else ""
+        return {
+            "drive_id": existing_drive_id,
+            "drive_url": existing_drive_url,
+            "uploaded_files": uploaded_files,
+            "photo_url": main_photo_url,
+            "is_new_folder": False
+        }
 
     logging.info(f"Provisioning new Shared Drive folder for Job #{clean_job_num}...")
     drive_info = process_new_service_request_submittal(

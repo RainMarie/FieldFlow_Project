@@ -376,9 +376,19 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
-        # Google Drive Photo Upload Processing
-        final_photo_url = staged_photo_path["value"]
-        if final_photo_url and os.path.exists(final_photo_url) and os.path.isfile(final_photo_url):
+        # Collect all staged files (Cover photo + multi-file documents)
+        files_to_upload = []
+        raw_photo_path = staged_photo_path["value"]
+        if raw_photo_path and os.path.exists(raw_photo_path) and os.path.isfile(raw_photo_path):
+            files_to_upload.append(raw_photo_path)
+
+        for doc_p in staged_documents:
+            if doc_p and os.path.exists(doc_p) and os.path.isfile(doc_p) and doc_p not in files_to_upload:
+                files_to_upload.append(doc_p)
+
+        # Perform Google Drive upload and extract direct thumbnail URL
+        final_photo_url = raw_photo_path
+        if files_to_upload:
             try:
                 from src.backend.drive_service import ensure_project_drive_folder
                 drive_info = ensure_project_drive_folder(
@@ -386,13 +396,9 @@ def build_project_detail_modal(
                     project_name=proj_name,
                     requestor_name=f"{pm_first} {pm_last}".strip() or "FieldFlow User",
                     requestor_email=pm_email or "user@tombarrow.com",
-                    attached_file_paths=[final_photo_url]
+                    attached_file_paths=files_to_upload
                 )
-                uploaded_files = drive_info.get("uploaded_files", [])
-                if uploaded_files:
-                    first_file = uploaded_files[0]
-                    final_photo_url = first_file.get("web_view_link") or first_file.get("file_id") or final_photo_url
-                elif drive_info.get("photo_url"):
+                if drive_info.get("photo_url"):
                     final_photo_url = drive_info.get("photo_url")
             except Exception as drive_err:
                 logging.warning(f"Google Drive photo upload note: {drive_err}")
