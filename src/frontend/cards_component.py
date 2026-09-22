@@ -271,74 +271,89 @@ def build_project_card(
 
     if is_grid_mode:
         img_control = build_project_image_control(photo_url, height=120)
+        
+        # Upper clickable body (triggers project edit dialog only)
+        card_body = ft.Container(
+            on_click=handle_edit_click,
+            ink=True,
+            border_radius=6,
+            content=ft.Column(
+                [
+                    img_control,
+                    ft.Row(
+                        [
+                            ft.Text(f"Job #{job_num}", size=16, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
+                            ft.Container(
+                                content=ft.Text(f"Acct: {acct_no}", size=10, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE),
+                                bgcolor=FieldFlowLightTheme.BG_BLUE_TINT,
+                                padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                                border_radius=4
+                            )
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                    ),
+                    ft.Text(name, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=15, no_wrap=True),
+                    ft.Text(f"Client: {client}", weight=ft.FontWeight.W_500, color=FieldFlowLightTheme.TEXT_PRIMARY, size=12, no_wrap=True),
+                    ft.Text(f"📍 {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True),
+                    ft.Row(
+                        [
+                            ft.Icon(ft.icons.PERSON_OUTLINE, size=14, color=FieldFlowLightTheme.ACCENT_BLUE),
+                            build_truncating_text(f"PM: {pm_full_name}" + (f" ({pm_em})" if pm_em else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
+                        ],
+                        spacing=4
+                    ),
+                    ft.Row(
+                        [
+                            ft.Icon(ft.icons.BADGE_OUTLINED, size=14, color=FieldFlowLightTheme.PINK_PRIMARY),
+                            build_truncating_text(f"Sales: {sales_em or 'N/A'}" + (f" [{team_code}]" if team_code else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
+                        ],
+                        spacing=4
+                    ),
+                ],
+                spacing=5
+            )
+        )
+
+        # Isolated action bar (prevents click propagation)
+        card_actions = ft.Column(
+            [
+                ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
+                ft.Row(
+                    [
+                        ft.OutlinedButton(
+                            "Drive",
+                            icon=ft.icons.LAUNCH,
+                            on_click=handle_drive_click,
+                            style=FieldFlowLightTheme.get_secondary_button_style()
+                        ),
+                        ft.OutlinedButton(
+                            "Edit",
+                            icon=ft.icons.EDIT,
+                            on_click=handle_edit_click,
+                            style=FieldFlowLightTheme.get_secondary_button_style()
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                ),
+                ft.ElevatedButton(
+                    "+ Service Request",
+                    icon=ft.icons.POST_ADD,
+                    on_click=handle_service_request_click,
+                    style=FieldFlowLightTheme.get_primary_button_style()
+                )
+            ],
+            spacing=6
+        )
+
         return ft.Card(
             content=ft.Container(
-                on_click=handle_edit_click,
-                ink=True,
                 padding=12,
                 bgcolor=FieldFlowLightTheme.SURFACE_CARD,
                 border_radius=8,
                 width=350,
                 border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
                 shadow=FieldFlowLightTheme.get_card_shadow(),
-                content=ft.Column(
-                    [
-                        img_control,
-                        ft.Row(
-                            [
-                                ft.Text(f"Job #{job_num}", size=16, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
-                                ft.Container(
-                                    content=ft.Text(f"Acct: {acct_no}", size=10, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE),
-                                    bgcolor=FieldFlowLightTheme.BG_BLUE_TINT,
-                                    padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                                    border_radius=4
-                                )
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                        ),
-                        ft.Text(client, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=14),
-                        ft.Text(f"{name} ({address})", size=12, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True),
-                        ft.Row(
-                            [
-                                ft.Icon(ft.icons.PERSON_OUTLINE, size=14, color=FieldFlowLightTheme.ACCENT_BLUE),
-                                build_truncating_text(f"PM: {pm_full_name}" + (f" ({pm_em})" if pm_em else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
-                            ],
-                            spacing=4
-                        ),
-                        ft.Row(
-                            [
-                                ft.Icon(ft.icons.BADGE_OUTLINED, size=14, color=FieldFlowLightTheme.PINK_PRIMARY),
-                                build_truncating_text(f"Sales: {sales_em or 'N/A'}" + (f" [{team_code}]" if team_code else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
-                            ],
-                            spacing=4
-                        ),
-                        ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
-                        ft.Row(
-                            [
-                                ft.OutlinedButton(
-                                    "Drive",
-                                    icon=ft.icons.LAUNCH,
-                                    on_click=handle_drive_click,
-                                    style=FieldFlowLightTheme.get_secondary_button_style()
-                                ),
-                                ft.OutlinedButton(
-                                    "Edit",
-                                    icon=ft.icons.EDIT,
-                                    on_click=handle_edit_click,
-                                    style=FieldFlowLightTheme.get_secondary_button_style()
-                                ),
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                        ),
-                        ft.ElevatedButton(
-                            "+ Service Request",
-                            icon=ft.icons.POST_ADD,
-                            on_click=handle_service_request_click,
-                            style=FieldFlowLightTheme.get_primary_button_style()
-                        )
-                    ],
-                    spacing=6
-                )
+                content=ft.Column([card_body, card_actions], spacing=2)
             )
         )
     else:
@@ -350,10 +365,63 @@ def build_project_card(
             clip_behavior=ft.ClipBehavior.HARD_EDGE
         )
 
+        # Clickable info section (triggers project edit dialog only)
+        list_info_section = ft.Container(
+            on_click=handle_edit_click,
+            ink=True,
+            expand=True,
+            border_radius=4,
+            padding=ft.padding.symmetric(horizontal=6, vertical=2),
+            content=ft.Row(
+                [
+                    small_img,
+                    ft.Column(
+                        [
+                            ft.Row(
+                                [
+                                    ft.Text(f"Job #{job_num}", size=14, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
+                                    ft.Text(name or f"Service: {client}", weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=13, no_wrap=True)
+                                ],
+                                spacing=10
+                            ),
+                            ft.Text(f"Client: {client} ({acct_no})   |   PM: {pm_full_name} ({pm_em or 'N/A'})   |   {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True)
+                        ],
+                        spacing=2,
+                        expand=True
+                    )
+                ],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER
+            )
+        )
+
+        # Isolated right-aligned action buttons
+        list_action_section = ft.Row(
+            [
+                ft.ElevatedButton(
+                    "+ Service Request",
+                    icon=ft.icons.POST_ADD,
+                    on_click=handle_service_request_click,
+                    style=FieldFlowLightTheme.get_primary_button_style()
+                ),
+                ft.IconButton(
+                    icon=ft.icons.FOLDER_OUTLINED,
+                    icon_color=FieldFlowLightTheme.PINK_PRIMARY,
+                    tooltip="Open Drive Folder",
+                    on_click=handle_drive_click
+                ),
+                ft.IconButton(
+                    icon=ft.icons.EDIT_OUTLINED,
+                    icon_color=FieldFlowLightTheme.TEXT_PRIMARY,
+                    tooltip="Edit Project Details",
+                    on_click=handle_edit_click
+                ),
+            ],
+            spacing=6
+        )
+
         return ft.Card(
             content=ft.Container(
-                on_click=handle_edit_click,
-                ink=True,
                 padding=10,
                 bgcolor=FieldFlowLightTheme.SURFACE_CARD,
                 border_radius=8,
@@ -361,46 +429,7 @@ def build_project_card(
                 border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
                 shadow=FieldFlowLightTheme.get_card_shadow(),
                 content=ft.Row(
-                    [
-                        small_img,
-                        ft.Column(
-                            [
-                                ft.Row(
-                                    [
-                                        ft.Text(f"Job #{job_num}", size=14, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
-                                        ft.Text(name or f"Service: {client}", weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=13, no_wrap=True)
-                                    ],
-                                    spacing=10
-                                ),
-                                ft.Text(f"Client: {client} ({acct_no})   |   PM: {pm_full_name} ({pm_em or 'N/A'})   |   {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True)
-                            ],
-                            spacing=2,
-                            expand=True
-                        ),
-                        ft.Row(
-                            [
-                                ft.ElevatedButton(
-                                    "+ Service Request",
-                                    icon=ft.icons.POST_ADD,
-                                    on_click=handle_service_request_click,
-                                    style=FieldFlowLightTheme.get_primary_button_style()
-                                ),
-                                ft.IconButton(
-                                    icon=ft.icons.FOLDER_OUTLINED,
-                                    icon_color=FieldFlowLightTheme.PINK_PRIMARY,
-                                    tooltip="Open Drive Folder",
-                                    on_click=handle_drive_click
-                                ),
-                                ft.IconButton(
-                                    icon=ft.icons.EDIT_OUTLINED,
-                                    icon_color=FieldFlowLightTheme.TEXT_PRIMARY,
-                                    tooltip="Edit Project Details",
-                                    on_click=handle_edit_click
-                                ),
-                            ],
-                            spacing=6
-                        )
-                    ],
+                    [list_info_section, list_action_section],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER
                 )
