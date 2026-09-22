@@ -1,13 +1,14 @@
 """
 src/frontend/cards_component.py
 Consolidated card rendering module for FieldFlow using standardized key names,
-project photo rendering, Company Project Manager integration, uniform FieldFlowLightTheme styling,
-and card-level click interaction to open the tabbed Project Activity Hub.
+project photo rendering with Google Drive direct link support, Company Project Manager integration,
+uniform FieldFlowLightTheme styling, and card-level click interactions.
 """
 
 import os
 import sys
 import glob
+import re
 import flet as ft
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -81,19 +82,72 @@ def calculate_ticket_progress(status_string: str) -> tuple[str, str]:
         return FieldFlowLightTheme.TEXT_MUTED, "Unassigned"
 
 
-def build_project_image_control(photo_url_or_path: str, height: int = 120) -> ft.Control:
-    """Renders network images, local disk images, or styled fallback brand containers."""
-    val = (photo_url_or_path or "").strip()
-    if val.startswith("http://") or val.startswith("https://"):
-        return ft.Image(src=val, height=height, fit=ft.ImageFit.COVER, border_radius=6)
+def extract_drive_direct_url(input_path: str) -> str:
+    """
+    Parses Google Drive web URLs or File IDs and converts them into direct thumbnail/image links.
+    Converts links like 'drive.google.com/file/d/FILE_ID/view' into 'https://lh3.googleusercontent.com/d/FILE_ID'.
+    """
+    if not input_path or not isinstance(input_path, str):
+        return ""
 
+    val = input_path.strip()
+
+    # Pattern 1: URL containing /file/d/FILE_ID/
+    file_id_match = re.search(r'/file/d/([a-zA-Z0-9_-]+)', val)
+    if file_id_match:
+        file_id = file_id_match.group(1)
+        return f"https://lh3.googleusercontent.com/d/{file_id}"
+
+    # Pattern 2: URL containing id=FILE_ID
+    id_param_match = re.search(r'id=([a-zA-Z0-9_-]+)', val)
+    if id_param_match:
+        file_id = id_param_match.group(1)
+        return f"https://lh3.googleusercontent.com/d/{file_id}"
+
+    # Pattern 3: Raw Google Drive File ID (alphanumeric, length >= 25)
+    if re.match(r'^[a-zA-Z0-9_-]{25,}$', val):
+        return f"https://lh3.googleusercontent.com/d/{val}"
+
+    return val
+
+
+def build_project_image_control(photo_url_or_path: str, height: int = 120) -> ft.Control:
+    """
+    Renders Google Drive images, network images, local disk images, 
+    or styled fallback brand containers.
+    """
+    processed_val = extract_drive_direct_url(photo_url_or_path)
+
+    # Handle Direct HTTP/HTTPS Web URLs (including converted Google Drive thumbnail links)
+    if processed_val.startswith("http://") or processed_val.startswith("https://"):
+        return ft.Image(
+            src=processed_val,
+            height=height,
+            fit=ft.ImageFit.COVER,
+            border_radius=6,
+            error_content=ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.icons.BROKEN_IMAGE_OUTLINED, color=FieldFlowLightTheme.TEXT_MUTED, size=20),
+                        ft.Text("Image Unavailable", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER
+                ),
+                alignment=ft.alignment.center,
+                height=height,
+                bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+                border_radius=6
+            )
+        )
+
+    # Handle Local Disk Files
     target_file = None
-    if val and os.path.exists(val):
-        if os.path.isfile(val):
-            target_file = val
-        elif os.path.isdir(val):
+    if processed_val and os.path.exists(processed_val):
+        if os.path.isfile(processed_val):
+            target_file = processed_val
+        elif os.path.isdir(processed_val):
             for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.JPG", "*.PNG"]:
-                found = glob.glob(os.path.join(val, ext))
+                found = glob.glob(os.path.join(processed_val, ext))
                 if found:
                     target_file = found[0]
                     break
@@ -112,6 +166,7 @@ def build_project_image_control(photo_url_or_path: str, height: int = 120) -> ft
                 alignment=ft.alignment.center
             )
 
+    # Fallback TBCo Brand Logo Container
     return ft.Container(
         content=ft.Row(
             [
@@ -142,7 +197,7 @@ def build_project_card(
 ) -> ft.Card:
     """
     Renders a project card container for Projects Registry in Grid or List mode.
-    Clicking non-button surface space opens the multi-tab detail modal.
+    Directly consumes canonical keys for Contractor, Company PM, and Sales Rep.
     """
     if isinstance(project_data, dict):
         job_num = project_data.get("tbc_job_number", "123456XX")
