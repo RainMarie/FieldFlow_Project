@@ -203,12 +203,15 @@ def build_project_card(
         job_num = project_data.get("tbc_job_number", "123456XX")
         name = project_data.get("project_name", "Service Project")
         st1 = project_data.get("street_address_1", "")
+        st2 = project_data.get("street_address_2", "")
         c_city = project_data.get("city", "")
         c_state = project_data.get("state", "")
+        c_zip = project_data.get("postal_code", "")
+        c_country = project_data.get("country", "US")
 
         address = f"{st1}, {c_city}, {c_state}".strip(", ") if st1 else project_data.get("site_name", "Pending Address")
 
-        client = project_data.get("contractor_company_name", "Partner")
+        client = project_data.get("contractor_company_name") or project_data.get("contractor_name") or project_data.get("company_name", "Partner")
         acct_no = project_data.get("tbco_account_number", "N/A")
         site_name = project_data.get("site_name", name)
         
@@ -220,36 +223,45 @@ def build_project_card(
 
         photo_url = project_data.get("photo_url", "")
 
-        pm_f = project_data.get("pm_first_name", "")
-        pm_l = project_data.get("pm_last_name", "")
-        pm_em = project_data.get("pm_email", "")
-        pm_ph = project_data.get("pm_phone", "")
+        pm_f = project_data.get("pm_first_name") or project_data.get("project_site_contact_first_name", "")
+        pm_l = project_data.get("pm_last_name") or project_data.get("project_site_contact_last_name", "")
+        pm_em = project_data.get("pm_email") or project_data.get("project_site_contact_email", "")
+        pm_ph = project_data.get("pm_phone") or project_data.get("project_site_contact_phone", "")
 
         sales_em = project_data.get("sales_rep_email", "")
         sales_ph = project_data.get("sales_rep_phone", "")
         team_code = project_data.get("team_code", "")
     else:
         job_num, name, address, client, acct_no, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "N/A", "FLD-GDRV-123456XX", ""
-        st1, c_city, c_state = "", "", ""
+        st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "US"
         site_name = name
         pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
         sales_em, sales_ph, team_code = "", "", ""
 
     pm_full_name = f"{pm_f} {pm_l}".strip() or "Unassigned PM"
 
+    # Merge full project dictionary + all primary keys & site contact key aliases
     prefill_payload = {
+        **(project_data if isinstance(project_data, dict) else {}),
         "tbc_job_number": job_num,
         "project_name": name,
         "contractor_company_name": client,
         "tbco_account_number": acct_no,
         "site_name": site_name,
         "street_address_1": st1,
+        "street_address_2": st2,
         "city": c_city,
         "state": c_state,
+        "postal_code": c_zip,
+        "country": c_country,
         "pm_first_name": pm_f,
         "pm_last_name": pm_l,
         "pm_email": pm_em,
         "pm_phone": pm_ph,
+        "project_site_contact_first_name": pm_f,
+        "project_site_contact_last_name": pm_l,
+        "project_site_contact_email": pm_em,
+        "project_site_contact_phone": pm_ph,
         "sales_rep_email": sales_em,
         "sales_rep_phone": sales_ph,
         "team_code": team_code,
@@ -272,7 +284,7 @@ def build_project_card(
     if is_grid_mode:
         img_control = build_project_image_control(photo_url, height=120)
         
-        # Upper clickable body (triggers project edit dialog only)
+        # Upper clickable body container (triggers project edit dialog only)
         card_body = ft.Container(
             on_click=handle_edit_click,
             ink=True,
@@ -314,7 +326,7 @@ def build_project_card(
             )
         )
 
-        # Isolated action bar (prevents click propagation)
+        # Isolated action bar (no parent click handler attached)
         card_actions = ft.Column(
             [
                 ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
@@ -365,7 +377,7 @@ def build_project_card(
             clip_behavior=ft.ClipBehavior.HARD_EDGE
         )
 
-        # Clickable info section (triggers project edit dialog only)
+        # Clickable info section container (triggers project edit dialog only)
         list_info_section = ft.Container(
             on_click=handle_edit_click,
             ink=True,
@@ -395,7 +407,7 @@ def build_project_card(
             )
         )
 
-        # Isolated right-aligned action buttons
+        # Isolated right-aligned action buttons (no parent click handler attached)
         list_action_section = ft.Row(
             [
                 ft.ElevatedButton(
@@ -557,7 +569,7 @@ def build_standard_ticket_card(
 
 
 # =========================================================================
-# 4. SITE ASSET, VISIT HISTORY, & USER CARD BUILDERS
+# 4. SITE ASSET, VISIT HISTORY, & USER CARD BUILDER
 # =========================================================================
 
 def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_action=None) -> ft.Container:
