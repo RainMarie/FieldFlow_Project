@@ -768,4 +768,4 @@ def build_ticket_detail_modal(
         ]
     )
 
-    return project_detail_modal_dialog, populate_ticket_data
+    return ticket_detail_modal_dialog, populate_ticket_data
