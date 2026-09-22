@@ -18,7 +18,7 @@ def main(page: ft.Page):
     
     # 1. HEAVY DESKTOP VIEWPORT (Admin Control Tower Dashboard)
     desktop_view = ft.Container(
-        content=ft.Text(f"🖥️ Admin Control Tower | Workspace: {CURRENT_USER_NAME}", size=20, weight=ft.FontWeight.BOLD),
+        content=ft.Text(f"Admin Control Tower | Workspace: {CURRENT_USER_NAME}", size=20, weight=ft.FontWeight.BOLD),
         bgcolor="#1E1E26",
         padding=40,
         alignment=ft.alignment.center,
@@ -29,7 +29,7 @@ def main(page: ft.Page):
     # The UX Fix: We clip its width to 450px max and center it so it looks like a real smartphone layout!
     mobile_phone_chassis = ft.Container(
         content=ft.Column([
-            ft.Text(f"📱 Mobile Field Suite", size=18, weight=ft.FontWeight.BOLD, color="#00A86B"),
+            ft.Text(f"Mobile Field Suite", size=18, weight=ft.FontWeight.BOLD, color="#00A86B"),
             ft.Text(f"Active Operator: {CURRENT_USER_NAME}", size=14, color="#A0A0A0"),
             ft.Divider(color="#222222"),
             ft.Text("Chronological Navigation Feed (Ready for Sprints)", size=14)
@@ -53,7 +53,7 @@ def main(page: ft.Page):
     # Displays the exact corporate text mandated by our technical project baseline [cite: 310, 311]
     hard_error_card = ft.Container(
         content=ft.Column([
-            ft.Text("🛑 Access Restricted", size=22, weight=ft.FontWeight.BOLD, color="#FF3333"),
+            ft.Text("Access Restricted", size=22, weight=ft.FontWeight.BOLD, color="#FF3333"),
             ft.Text(
                 "The Admin Control Tower is optimized for desktop environments. "
                 "Please utilize a desktop executable or workstation browser to review administrative dashboards.",
