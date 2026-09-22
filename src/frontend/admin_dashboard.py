@@ -531,13 +531,66 @@ def main(page: ft.Page):
     )
 
     def execute_live_search(e):
+        """Queries local SQLite database first for relational accuracy and immediate UI updates."""
         search_query = search_input.value.strip().lower() if search_input and search_input.value else ""
         projects_list_container.controls.clear()
         is_grid_mode = projects_view_filter["is_grid"]
 
         db_rows = []
 
-        if db is not None:
+        # Step 1: Local-First Query with full Relational JOINs across 5 tables
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        p.tbc_job_number,
+                        p.project_name,
+                        p.site_name,
+                        p.drive_id,
+                        p.stage,
+                        c.company_name AS contractor_company_name,
+                        c.tbco_account_number,
+                        loc.street_address_1,
+                        loc.street_address_2,
+                        loc.city,
+                        loc.state,
+                        loc.postal_code,
+                        loc.country,
+                        cnt.first_name AS pm_first_name,
+                        cnt.last_name AS pm_last_name,
+                        cnt.email AS pm_email,
+                        cnt.phone AS pm_phone,
+                        ir.sales_rep_email,
+                        ir.sales_rep_phone,
+                        ir.team_code
+                    FROM projects p
+                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                    LEFT JOIN locations loc ON p.site_name = loc.site_name
+                    LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
+                    LEFT JOIN (
+                        SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
+                        FROM intake_requests
+                        GROUP BY tbc_job_number
+                    ) ir ON p.tbc_job_number = ir.tbc_job_number
+                """)
+                for row in cursor.fetchall():
+                    r_dict = dict(row)
+                    if not r_dict.get("drive_id"):
+                        r_dict["drive_id"] = f"FLD-DRIVE-{r_dict.get('tbc_job_number')}"
+
+                    job_num = str(r_dict.get("tbc_job_number", "")).lower()
+                    p_name = str(r_dict.get("project_name", "")).lower()
+                    s_name = str(r_dict.get("site_name", "")).lower()
+                    c_name = str(r_dict.get("contractor_company_name", "")).lower()
+
+                    if not search_query or (search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name):
+                        db_rows.append(r_dict)
+        except Exception as err:
+            print(f"Projects local search query error: {err}")
+
+        # Step 2: Fallback to Firestore stream ONLY if local SQLite yields no records
+        if not db_rows and db is not None:
             try:
                 projects_stream = db.collection("projects").stream()
                 for doc in projects_stream:
@@ -552,38 +605,11 @@ def main(page: ft.Page):
                     if not search_query or (search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name):
                         if not p_dict.get("drive_id"):
                             p_dict["drive_id"] = f"FLD-DRIVE-{p_dict.get('tbc_job_number')}"
-                        p_dict["contractor_company_name"] = c_name or "Partner"
                         db_rows.append(p_dict)
             except Exception as cloud_err:
                 print(f"Cloud project search offline/error: {cloud_err}")
 
-        if not db_rows:
-            try:
-                with local_db.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT p.tbc_job_number, p.project_name, p.site_name, p.drive_id,
-                               p.tbco_account_number, c.company_name AS contractor_company_name
-                        FROM projects p
-                        LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
-                    """)
-                    for row in cursor.fetchall():
-                        r_dict = dict(row)
-                        if not r_dict.get("drive_id"):
-                            r_dict["drive_id"] = f"FLD-DRIVE-{r_dict['tbc_job_number']}"
-
-                        if not search_query:
-                            db_rows.append(r_dict)
-                        else:
-                            job_num = str(r_dict.get("tbc_job_number", "")).lower()
-                            p_name = str(r_dict.get("project_name", "")).lower()
-                            s_name = str(r_dict.get("site_name", "")).lower()
-                            c_name = str(r_dict.get("contractor_company_name", "")).lower()
-                            if search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name:
-                                db_rows.append(r_dict)
-            except Exception as err:
-                print(f"Projects local search query error: {err}")
-
+        # Step 3: Build card controls from fresh records
         for row in db_rows:
             p_card = build_project_card(
                 project_data=row,
