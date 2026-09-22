@@ -1,7 +1,8 @@
 """
 src/frontend/details_component.py
 Consolidated detail modal views for FieldFlow using standardized key names,
-a tabbed multi-view layout, and hybrid local-first (SQLite + Firestore) project tab lookups.
+a tabbed multi-view layout, hybrid local-first (SQLite + Firestore) project tab lookups,
+and automatic Google Drive photo uploads for Project Master Records.
 """
 
 import os
@@ -82,7 +83,6 @@ def build_project_detail_modal(
     Renders an interactive, tabbed Project Detail Modal displaying Core Vitals,
     associated Service Requests, Site Assets, and Field Dispatches using hybrid lookups.
     """
-    # Pre-declare variable in outer function scope to resolve static analysis undefined variable warnings
     project_detail_modal_dialog = None
 
     active_project_state = {"tbc_job_number": None, "drive_id": None}
@@ -376,6 +376,27 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
+        # Google Drive Photo Upload Processing
+        final_photo_url = staged_photo_path["value"]
+        if final_photo_url and os.path.exists(final_photo_url) and os.path.isfile(final_photo_url):
+            try:
+                from src.backend.drive_service import ensure_project_drive_folder
+                drive_info = ensure_project_drive_folder(
+                    job_number=job_num,
+                    project_name=proj_name,
+                    requestor_name=f"{pm_first} {pm_last}".strip() or "FieldFlow User",
+                    requestor_email=pm_email or "user@tombarrow.com",
+                    attached_file_paths=[final_photo_url]
+                )
+                uploaded_files = drive_info.get("uploaded_files", [])
+                if uploaded_files:
+                    first_file = uploaded_files[0]
+                    final_photo_url = first_file.get("web_view_link") or first_file.get("file_id") or final_photo_url
+                elif drive_info.get("photo_url"):
+                    final_photo_url = drive_info.get("photo_url")
+            except Exception as drive_err:
+                logging.warning(f"Google Drive photo upload note: {drive_err}")
+
         updated_payload = {
             "tbc_job_number": job_num,
             "site_name": site_name,
@@ -395,12 +416,18 @@ def build_project_detail_modal(
             "pm_phone": pm_phone,
             "stage": stage_val,
             "drive_id": drive_id_val,
-            "photo_url": staged_photo_path["value"]
+            "photo_url": final_photo_url
         }
 
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
+
+                # Dynamic Schema Migration Check for photo_url
+                cursor.execute("PRAGMA table_info(projects);")
+                proj_cols = [row[1] for row in cursor.fetchall()]
+                if "photo_url" not in proj_cols:
+                    cursor.execute("ALTER TABLE projects ADD COLUMN photo_url TEXT;")
 
                 # Step 1: Upsert into LOCATIONS table
                 cursor.execute("""
@@ -430,13 +457,13 @@ def build_project_detail_modal(
 
                 updated_payload["pm_contact_id"] = pm_contact_id
 
-                # Step 4: Upsert into PROJECTS master table
+                # Step 4: Upsert into PROJECTS master table (including photo_url)
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
                         tbc_job_number, site_name, tbco_account_number, pm_contact_id,
-                        project_name, drive_id, stage
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (job_num, site_name, company_acct, pm_contact_id, proj_name, drive_id_val, stage_val))
+                        project_name, drive_id, stage, photo_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (job_num, site_name, company_acct, pm_contact_id, proj_name, drive_id_val, stage_val, final_photo_url))
 
                 # Step 5: Sync all matching records in INTAKE_REQUESTS table
                 cursor.execute("""
