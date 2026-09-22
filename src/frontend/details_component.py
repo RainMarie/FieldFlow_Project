@@ -7,6 +7,7 @@ import os
 import sys
 import logging
 import glob
+import uuid
 from datetime import datetime
 import flet as ft
 
@@ -20,9 +21,6 @@ from src.frontend.theme import FieldFlowLightTheme
 from src.backend.db_manager import (
     local_db, 
     db as firestore_db,
-    resolve_location,
-    resolve_contractor,
-    resolve_pm_contact,
     resolve_sales_user
 )
 from src.frontend.shared_utils import find_any_local_logo, get_base64_from_file, show_toast
@@ -228,17 +226,10 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
-        clean_site = resolve_location(site_name, street_1, street_2, city_val, state_val, postal_val, country_val)
-        clean_acct = resolve_contractor(company_acct, company_name)
-        clean_pm_id = None
-        if pm_email:
-            clean_pm_id = resolve_pm_contact(company_acct, pm_first, pm_last, pm_email, pm_phone)
-
         updated_payload = {
             "tbc_job_number": job_num,
-            "site_name": clean_site,
-            "tbco_account_number": clean_acct,
-            "pm_contact_id": clean_pm_id,
+            "site_name": site_name,
+            "tbco_account_number": company_acct,
             "project_name": proj_name,
             "contractor_company_name": company_name,
             "contractor_name": company_name,
@@ -257,44 +248,80 @@ def build_project_detail_modal(
             "photo_url": staged_photo_path["value"]
         }
 
-        # Step 1: Local SQLite Write (UPSERT + Table Mirror Sync)
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
-                # Upsert into projects table
+
+                # Step 1: Upsert into LOCATIONS table
+                cursor.execute("""
+                    INSERT OR REPLACE INTO locations (
+                        site_name, street_address_1, street_address_2, city, state, postal_code, country
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (site_name, street_1, street_2, city_val, state_val, postal_val, country_val))
+
+                # Step 2: Upsert into CONTRACTORS table
+                cursor.execute("""
+                    INSERT OR REPLACE INTO contractors (tbco_account_number, company_name)
+                    VALUES (?, ?)
+                """, (company_acct, company_name))
+
+                # Step 3: Upsert into CONTACTS table (if PM contact details provided)
+                pm_contact_id = None
+                if pm_email:
+                    cursor.execute("SELECT contact_id FROM contacts WHERE LOWER(email) = ?", (pm_email,))
+                    row = cursor.fetchone()
+                    pm_contact_id = row["contact_id"] if row else f"CONT-{uuid.uuid4().hex[:8].upper()}"
+
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO contacts (
+                            contact_id, tbco_account_number, first_name, last_name, title, phone, email
+                        ) VALUES (?, ?, ?, ?, 'Project Manager', ?, ?)
+                    """, (pm_contact_id, company_acct, pm_first, pm_last, pm_phone, pm_email))
+
+                updated_payload["pm_contact_id"] = pm_contact_id
+
+                # Step 4: Upsert into PROJECTS master table
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
                         tbc_job_number, site_name, tbco_account_number, pm_contact_id,
                         project_name, drive_id, stage
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (job_num, clean_site, clean_acct, clean_pm_id, proj_name, drive_id_val, stage_val))
+                """, (job_num, site_name, company_acct, pm_contact_id, proj_name, drive_id_val, stage_val))
 
-                # Also update matching intake_requests records so project cards update immediately
+                # Step 5: Sync all matching records in INTAKE_REQUESTS table
                 cursor.execute("""
                     UPDATE intake_requests
                     SET project_name = ?, contractor_company_name = ?, site_name = ?,
                         street_address_1 = ?, street_address_2 = ?, city = ?, state = ?,
-                        postal_code = ?, country = ?
+                        postal_code = ?, country = ?, project_site_contact_first_name = ?,
+                        project_site_contact_last_name = ?, project_site_contact_email = ?,
+                        project_site_contact_phone = ?
                     WHERE tbc_job_number = ?
-                """, (proj_name, company_name, clean_site, street_1, street_2, city_val, state_val, postal_val, country_val, job_num))
+                """, (
+                    proj_name, company_name, site_name, street_1, street_2, city_val, state_val,
+                    postal_val, country_val, pm_first, pm_last, pm_email, pm_phone, job_num
+                ))
 
                 conn.commit()
+
+            # Step 6: Firestore Cloud Mirror Write
+            if firestore_db is not None:
+                try:
+                    firestore_db.collection("projects").document(job_num).set(updated_payload, merge=True)
+                except Exception as fs_err:
+                    logging.error(f"Firestore project update error: {fs_err}")
+
+            # Step 7: Success notification & parent card callback execution
+            show_toast(page, f"Project #{job_num} Master Record Saved!", kind="success")
+            project_detail_modal_dialog.open = False
+            page.update()
+
+            if on_save_callback:
+                on_save_callback(updated_payload)
+
         except Exception as sql_err:
-            logging.error(f"SQLite project update error: {sql_err}")
-
-        # Step 2: Firestore Cloud Mirror Write
-        if firestore_db is not None:
-            try:
-                firestore_db.collection("projects").document(job_num).set(updated_payload, merge=True)
-            except Exception as fs_err:
-                logging.error(f"Firestore project update error: {fs_err}")
-
-        show_toast(page, f"Project #{job_num} Master Record Saved!", kind="success")
-        project_detail_modal_dialog.open = False
-        page.update()
-
-        if on_save_callback:
-            on_save_callback(updated_payload)
+            logging.error(f"SQLite project detail save error: {sql_err}")
+            show_toast(page, f"Save Failed: {str(sql_err)}", kind="error")
 
     project_detail_modal_dialog = ft.AlertDialog(
         bgcolor=FieldFlowLightTheme.SURFACE_CARD,
