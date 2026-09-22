@@ -2,7 +2,7 @@
 src/frontend/cards_component.py
 Consolidated card rendering module for FieldFlow using standardized key names,
 project photo rendering, Company Project Manager integration, uniform FieldFlowLightTheme styling,
-and sanitized Drive space IDs for prefilling service requests.
+and card-level click interaction to open the tabbed Project Activity Hub.
 """
 
 import os
@@ -142,7 +142,7 @@ def build_project_card(
 ) -> ft.Card:
     """
     Renders a project card container for Projects Registry in Grid or List mode.
-    Directly consumes canonical keys for Contractor, Company PM, and Sales Rep.
+    Clicking non-button surface space opens the multi-tab detail modal.
     """
     if isinstance(project_data, dict):
         job_num = project_data.get("tbc_job_number", "123456XX")
@@ -157,7 +157,6 @@ def build_project_card(
         acct_no = project_data.get("tbco_account_number", "N/A")
         site_name = project_data.get("site_name", name)
         
-        # Bottom-Up Fix: Sanitize drive_id so None, empty strings, or placeholder defaults resolve cleanly
         raw_drive_id = project_data.get("drive_id")
         if not raw_drive_id or str(raw_drive_id).strip() in ["", "None", "FLD-0", "FLD-DRIVE-123456XX"]:
             drive_id = f"FLD-GDRV-{job_num}"
@@ -199,7 +198,7 @@ def build_project_card(
         "sales_rep_email": sales_em,
         "sales_rep_phone": sales_ph,
         "team_code": team_code,
-        "drive_id": drive_id,  # Guaranteed non-empty Project space string
+        "drive_id": drive_id,
         "photo_url": photo_url
     }
 
@@ -219,6 +218,8 @@ def build_project_card(
         img_control = build_project_image_control(photo_url, height=120)
         return ft.Card(
             content=ft.Container(
+                on_click=handle_edit_click,
+                ink=True,
                 padding=12,
                 bgcolor=FieldFlowLightTheme.SURFACE_CARD,
                 border_radius=8,
@@ -296,6 +297,8 @@ def build_project_card(
 
         return ft.Card(
             content=ft.Container(
+                on_click=handle_edit_click,
+                ink=True,
                 padding=10,
                 bgcolor=FieldFlowLightTheme.SURFACE_CARD,
                 border_radius=8,

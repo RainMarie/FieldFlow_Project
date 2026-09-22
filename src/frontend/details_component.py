@@ -1,7 +1,7 @@
 """
 src/frontend/details_component.py
-Consolidated detail modal views for FieldFlow using standardized key names
-and a tabbed multi-view project card layout (Vitals, Requests, Assets, Dispatches).
+Consolidated detail modal views for FieldFlow using standardized key names,
+a tabbed multi-view layout, and hybrid local-first (SQLite + Firestore) project tab lookups.
 """
 
 import os
@@ -80,7 +80,7 @@ def build_project_detail_modal(
 ):
     """
     Renders an interactive, tabbed Project Detail Modal displaying Core Vitals,
-    associated Service Requests, Site Assets, and Field Dispatches.
+    associated Service Requests, Site Assets, and Field Dispatches using hybrid lookups.
     """
     active_project_state = {"tbc_job_number": None, "drive_id": None}
 
@@ -160,7 +160,7 @@ def build_project_detail_modal(
         page.overlay.append(docs_picker)
 
     def populate_project_data(proj_data, contractor_options=None, location_options=None, sales_options=None):
-        """Populates Vitals form and queries related SQLite records for Requests, Assets, and Dispatches."""
+        """Populates Vitals form and performs dual lookup (SQLite + Firestore) for Requests, Assets, and Dispatches."""
         if isinstance(proj_data, dict):
             job_num = proj_data.get("tbc_job_number", "")
             proj_name = proj_data.get("project_name", "")
@@ -218,85 +218,134 @@ def build_project_detail_modal(
             photo_status_txt.value = "No Custom Picture Selected"
             photo_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
 
-        # Query Local Database for Tabs 2, 3, & 4
+        # --- Dual Retrieval: Step 1: Local SQLite Query ---
+        local_requests = []
+        local_assets = []
+        local_dispatches = []
         if job_num:
             try:
                 with local_db.get_connection() as conn:
                     cursor = conn.cursor()
 
-                    # Query 1: Service Requests
                     cursor.execute("""
                         SELECT request_id, request_type, triage_status, issue_description, submission_timestamp
                         FROM intake_requests
                         WHERE tbc_job_number = ?
                         ORDER BY submission_timestamp DESC
                     """, (job_num,))
-                    req_rows = [dict(r) for r in cursor.fetchall()]
+                    local_requests = [dict(r) for r in cursor.fetchall()]
 
-                    # Query 2: Assets
                     cursor.execute("""
                         SELECT asset_id, equipment_tag, model_number, serial_number, operational_status
                         FROM assets
                         WHERE tbc_job_number = ?
                     """, (job_num,))
-                    asset_rows = [dict(r) for r in cursor.fetchall()]
+                    local_assets = [dict(r) for r in cursor.fetchall()]
 
-                    # Query 3: Dispatches
                     cursor.execute("""
                         SELECT job_id, technician_email, scheduled_time, status, job_type
                         FROM dispatches
                         WHERE tbc_job_number = ?
                         ORDER BY scheduled_time DESC
                     """, (job_num,))
-                    dispatch_rows = [dict(r) for r in cursor.fetchall()]
-
-                # Populate Tab 2: Service Requests List
-                requests_list_view.controls.clear()
-                if req_rows:
-                    for req in req_rows:
-                        requests_list_view.controls.append(
-                            ft.Container(
-                                content=ft.Column([
-                                    ft.Row([
-                                        ft.Text(f"Request #{req.get('request_id', 'N/A')}", weight=ft.FontWeight.BOLD, size=13, color=FieldFlowLightTheme.TEXT_PRIMARY),
-                                        ft.Text(req.get("triage_status", "Unassigned"), size=11, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE)
-                                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                                    ft.Text(f"Type: {req.get('request_type', 'General')}  |  Date: {str(req.get('submission_timestamp', ''))[:10]}", size=11, color=FieldFlowLightTheme.TEXT_MUTED),
-                                    ft.Text(f"Issue: {req.get('issue_description', 'N/A')}", size=11, color=FieldFlowLightTheme.TEXT_PRIMARY)
-                                ], spacing=3),
-                                bgcolor=FieldFlowLightTheme.SURFACE_HOVER,
-                                padding=10,
-                                border_radius=6,
-                                border=ft.border.all(1, FieldFlowLightTheme.BORDER_SUBTLE)
-                            )
-                        )
-                else:
-                    requests_list_view.controls.append(
-                        ft.Text("No service requests found for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
-                    )
-
-                # Populate Tab 3: Assets List
-                assets_list_view.controls.clear()
-                if asset_rows:
-                    for ast in asset_rows:
-                        assets_list_view.controls.append(build_site_asset_card(ast))
-                else:
-                    assets_list_view.controls.append(
-                        ft.Text("No registered assets found for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
-                    )
-
-                # Populate Tab 4: Dispatches List
-                dispatches_list_view.controls.clear()
-                if dispatch_rows:
-                    for disp in dispatch_rows:
-                        dispatches_list_view.controls.append(build_visit_history_card(disp))
-                else:
-                    dispatches_list_view.controls.append(
-                        ft.Text("No field dispatches scheduled for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
-                    )
+                    local_dispatches = [dict(r) for r in cursor.fetchall()]
 
             except Exception as sql_err:
-                logging.error(f"Error populating project detail modal sub-tabs: {sql_err}")
+                logging.error(f"SQLite project detail tab lookup error: {sql_err}")
+
+        # --- Dual Retrieval: Step 2: Cloud Firestore Hybrid Query & Merge ---
+        cloud_requests = []
+        cloud_assets = []
+        cloud_dispatches = []
+        if job_num and firestore_db is not None:
+            try:
+                fs_reqs = firestore_db.collection("intake_requests").where("tbc_job_number", "==", job_num).stream()
+                for doc in fs_reqs:
+                    d = doc.to_dict()
+                    d["request_id"] = doc.id
+                    cloud_requests.append(d)
+
+                fs_assets = firestore_db.collection("assets").where("tbc_job_number", "==", job_num).stream()
+                for doc in fs_assets:
+                    d = doc.to_dict()
+                    d["asset_id"] = doc.id
+                    cloud_assets.append(d)
+
+                fs_disp = firestore_db.collection("dispatches").where("tbc_job_number", "==", job_num).stream()
+                for doc in fs_disp:
+                    d = doc.to_dict()
+                    d["job_id"] = doc.id
+                    cloud_dispatches.append(d)
+            except Exception as fs_err:
+                logging.error(f"Firestore project detail tab lookup note: {fs_err}")
+
+        # Merge local & cloud records cleanly using key IDs
+        req_map = {r.get("request_id"): r for r in local_requests if r.get("request_id")}
+        for r in cloud_requests:
+            if r.get("request_id") and r.get("request_id") not in req_map:
+                req_map[r.get("request_id")] = r
+        merged_requests = list(req_map.values())
+
+        ast_map = {a.get("asset_id"): a for a in local_assets if a.get("asset_id")}
+        for a in cloud_assets:
+            if a.get("asset_id") and a.get("asset_id") not in ast_map:
+                ast_map[a.get("asset_id")] = a
+        merged_assets = list(ast_map.values())
+
+        disp_map = {d.get("job_id"): d for d in local_dispatches if d.get("job_id")}
+        for d in cloud_dispatches:
+            if d.get("job_id") and d.get("job_id") not in disp_map:
+                disp_map[d.get("job_id")] = d
+        merged_dispatches = list(disp_map.values())
+
+        # Render Tab 2: Service Requests List
+        requests_list_view.controls.clear()
+        if merged_requests:
+            for req in merged_requests:
+                requests_list_view.controls.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Text(f"Request #{req.get('request_id', 'N/A')}", weight=ft.FontWeight.BOLD, size=13, color=FieldFlowLightTheme.TEXT_PRIMARY),
+                                ft.Text(req.get("triage_status", "Unassigned"), size=11, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE)
+                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                            ft.Text(f"Type: {req.get('request_type', 'General')}  |  Date: {str(req.get('submission_timestamp', ''))[:10]}", size=11, color=FieldFlowLightTheme.TEXT_MUTED),
+                            ft.Text(f"Issue: {req.get('issue_description', 'N/A')}", size=11, color=FieldFlowLightTheme.TEXT_PRIMARY)
+                        ], spacing=3),
+                        bgcolor=FieldFlowLightTheme.SURFACE_HOVER,
+                        padding=10,
+                        border_radius=6,
+                        border=ft.border.all(1, FieldFlowLightTheme.BORDER_SUBTLE)
+                    )
+                )
+        else:
+            requests_list_view.controls.append(
+                ft.Text("No service requests found for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
+            )
+
+        # Render Tab 3: Assets List
+        assets_list_view.controls.clear()
+        if merged_assets:
+            for ast in merged_assets:
+                assets_list_view.controls.append(build_site_asset_card(ast))
+        else:
+            assets_list_view.controls.append(
+                ft.Text("No registered assets found for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
+            )
+
+        # Render Tab 4: Dispatches List
+        dispatches_list_view.controls.clear()
+        if merged_dispatches:
+            for disp in merged_dispatches:
+                dispatches_list_view.controls.append(build_visit_history_card(disp))
+        else:
+            dispatches_list_view.controls.append(
+                ft.Text("No field dispatches scheduled for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
+            )
+
+        # UI Refresh
+        if page:
+            page.update()
 
     def save_project_detail_edits(e):
         if not edit_project_job_num.value or not edit_project_name.value or not edit_company_name.value or not edit_site_name.value or not edit_street_1.value or not edit_city.value or not edit_state.value:
@@ -710,7 +759,7 @@ def build_ticket_detail_modal(
             width=760, height=580, padding=ft.padding.only(left=12, right=20, top=10, bottom=10)
         ),
         actions=[
-            ft.TextButton("Cancel", on_click=lambda _: [setattr(ticket_detail_modal_dialog, 'open', False), page.update()]),
+            ft.TextButton("Cancel", on_click=lambda _: [setattr(project_detail_modal_dialog, 'open', False), page.update()]),
             ft.ElevatedButton("Save Ticket Details", icon=ft.icons.SAVE, style=FieldFlowLightTheme.get_primary_button_style(), on_click=save_ticket_detail_edits)
         ]
     )

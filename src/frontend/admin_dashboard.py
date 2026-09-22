@@ -1,14 +1,11 @@
 """
-src/frontend/cards_component.py
-Consolidated card rendering module for FieldFlow using standardized key names,
-project photo rendering, Company Project Manager integration, uniform FieldFlowLightTheme styling,
-and card-level click interaction to open the tabbed Project Activity Hub.
+src/frontend/admin_dashboard.py
+Control Tower Admin Dashboard integrating side-by-side cockpit, Projects Registry,
+User Management, Master Catalog, and Audit Trail tabs with full FieldFlowLightTheme styling.
 """
 
 import os
 import sys
-import glob
-import flet as ft
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(CURRENT_DIR)
@@ -16,582 +13,943 @@ ROOT_DIR = os.path.dirname(SRC_DIR)
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
+import flet as ft
+import json
+import time
+import threading
+from datetime import datetime, timedelta
+from google.cloud.firestore_v1.base_query import FieldFilter
+
+from src.backend.lifecycle_rules import validate_user_role_permission, validate_project_space_exists
+from src.backend.search_engine import search_admin_portal
 from src.frontend.theme import FieldFlowLightTheme
-from src.frontend.shared_utils import find_any_local_logo, get_base64_from_file
+from src.backend.db_manager import db, local_db
+from src.backend.calendar_listener import GoogleCalendarListener
+from src.backend.drive_service import (
+    process_new_service_request_submittal,
+    create_project_drive_folder,
+    list_files_in_drive_folder,
+    ensure_project_drive_folder
+)
+
+from src.frontend.shared_utils import show_toast, open_drive_link
+from src.frontend.cards_component import (
+    build_standard_ticket_card,
+    build_truncating_text,
+    build_clickable_email_link,
+    build_project_card,
+    build_user_card
+)
+from src.frontend.details_component import (
+    build_ticket_detail_modal,
+    build_project_detail_modal
+)
+from src.frontend.forms_component import (
+    build_service_intake_form,
+    build_project_creation_form,
+    build_master_forms as build_master_data_management_view
+)
+from src.frontend.calendar_component import build_calendar_widget
 
 
-# =========================================================================
-# 1. SHARED VISUAL & FORMATTING UTILITY HELPERS
-# =========================================================================
+def main(page: ft.Page):
+    page.title = "FieldFlow Admin Control Tower"
+    page.window_maximized = True
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.bgcolor = FieldFlowLightTheme.BG_LIGHT
+    TITLE_FONT_SIZE = 18
 
-def build_truncating_text(text_val: str, size: int = 11, bold: bool = False, color_token=None) -> ft.Text:
-    """Helper to cleanly truncate long text fields with an ellipsis."""
-    return ft.Text(
-        value=text_val,
-        size=size,
-        weight=ft.FontWeight.BOLD if bold else ft.FontWeight.NORMAL,
-        color=color_token,
-        max_lines=1,
-        overflow=ft.TextOverflow.ELLIPSIS,
-        expand=True
+    calendar_listener = GoogleCalendarListener(interval_seconds=10)
+    calendar_listener.start_monitoring()
+
+    def on_page_disconnect(e):
+        calendar_listener.stop_monitoring()
+
+    page.on_disconnect = on_page_disconnect
+
+    def show_toast_local(message: str, kind: str = "success"):
+        show_toast(page, message, kind)
+
+    def open_drive_local(e, folder_id):
+        open_drive_link(page, folder_id, show_toast_local)
+
+    active_date_target = {"control": None}
+
+    def on_global_date_selected(e):
+        if global_date_picker.value and active_date_target["control"]:
+            active_date_target["control"].value = global_date_picker.value.strftime("%Y-%m-%d")
+            active_date_target["control"].update()
+
+    global_date_picker = ft.DatePicker(
+        first_date=datetime(2026, 1, 1),
+        last_date=datetime(2030, 12, 31),
+        on_change=on_global_date_selected
     )
+    page.overlay.append(global_date_picker)
 
+    def trigger_date_picker(target_control):
+        active_date_target["control"] = target_control
+        global_date_picker.pick_date()
 
-def build_clickable_email_link(page: ft.Page, email_addr: str, display_name: str = "") -> ft.Text:
-    """Helper to generate a clickable mailto: link that truncates on small screens."""
-    if not email_addr or email_addr == "N/A":
-        return build_truncating_text("No Email", size=11, color_token=FieldFlowLightTheme.TEXT_MUTED)
-        
-    label = f"{display_name} ({email_addr})" if display_name else email_addr
-    return ft.Text(
-        spans=[
-            ft.TextSpan(
-                label,
-                ft.TextStyle(
-                    color=FieldFlowLightTheme.ACCENT_BLUE, 
-                    decoration=ft.TextDecoration.UNDERLINE
-                ),
-                on_click=lambda e: page.launch_url(f"mailto:{email_addr}")
-            )
-        ],
-        size=11,
-        max_lines=1,
-        overflow=ft.TextOverflow.ELLIPSIS,
-        expand=True
-    )
+    projects_view_filter = {"is_grid": True}
 
+    def get_tech_options():
+        options = []
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT user_email, first_name, last_name, role 
+                    FROM users 
+                    WHERE role IN ('Technician', 'Admin') AND active_status = 'Active'
+                """)
+                for row in cursor.fetchall():
+                    full_name = f"{row['first_name']} {row['last_name']}".strip() or row['user_email']
+                    options.append(ft.dropdown.Option(row["user_email"], f"{full_name} ({row['user_email']})"))
+        except Exception as err:
+            print(f"Error fetching technicians: {err}")
 
-def calculate_ticket_progress(status_string: str) -> tuple[str, str]:
-    """Translates a dispatch completion status into a theme color token and clean status text."""
-    status = str(status_string or "Scheduled").strip()
+        if not options:
+            options = [
+                ft.dropdown.Option("tech1@tbcotampaservice.com", "Bob Tech (tech1@tbcotampaservice.com)"),
+                ft.dropdown.Option("tech2@tbcotampaservice.com", "Alex Tech (tech2@tbcotampaservice.com)"),
+                ft.dropdown.Option("admin@tombarrow.com", "Alice Admin (admin@tombarrow.com)")
+            ]
+        return options
 
-    if status == "Scheduled":
-        return FieldFlowLightTheme.ACCENT_BLUE, "Scheduled"
-    elif status == "Traveling":
-        return FieldFlowLightTheme.ACCENT_BLUE, "En Route to Site"
-    elif status == "In Progress":
-        return FieldFlowLightTheme.SUN_AMBER, "Work In Progress"
-    elif status == "Traveling (Return)":
-        return FieldFlowLightTheme.ACCENT_BLUE, "Return Travel"
-    elif status == "Pending":
-        return FieldFlowLightTheme.SUN_AMBER, "Pending Review"
-    elif status == "Completed":
-        return FieldFlowLightTheme.PRIMARY_GREEN, "Completed"
-    else:
-        return FieldFlowLightTheme.TEXT_MUTED, "Unassigned"
+    def get_contractor_options():
+        options = []
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT tbco_account_number, company_name FROM contractors ORDER BY company_name ASC")
+                for row in cursor.fetchall():
+                    account_num = row["tbco_account_number"]
+                    comp_name = row["company_name"] or "Unknown Contractor"
+                    options.append(ft.dropdown.Option(key=str(account_num), text=f"{comp_name} (Acct #{account_num})"))
+        except Exception as err:
+            print(f"Error fetching contractors: {err}")
+        return options
 
+    def get_location_options():
+        options = []
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT site_name, street_address_1 FROM locations ORDER BY site_name ASC")
+                for row in cursor.fetchall():
+                    s_name = row["site_name"]
+                    s_addr = row["street_address_1"] or ""
+                    options.append(ft.dropdown.Option(key=s_name, text=f"{s_name} - {s_addr}".strip(" -")))
+        except Exception as err:
+            print(f"Error fetching locations: {err}")
+        return options
 
-def build_project_image_control(photo_url_or_path: str, height: int = 120) -> ft.Control:
-    """Renders network images, local disk images, or styled fallback brand containers."""
-    val = (photo_url_or_path or "").strip()
-    if val.startswith("http://") or val.startswith("https://"):
-        return ft.Image(src=val, height=height, fit=ft.ImageFit.COVER, border_radius=6)
+    def get_salesperson_options():
+        options = []
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_email, first_name, last_name FROM users WHERE role IN ('Sales', 'Admin') AND active_status = 'Active'")
+                for row in cursor.fetchall():
+                    full_name = f"{row['first_name']} {row['last_name']}".strip() or row['user_email']
+                    options.append(ft.dropdown.Option(key=row["user_email"], text=f"{full_name} ({row['user_email']})"))
+        except Exception as err:
+            print(f"Error fetching sales reps: {err}")
+        return options
 
-    target_file = None
-    if val and os.path.exists(val):
-        if os.path.isfile(val):
-            target_file = val
-        elif os.path.isdir(val):
-            for ext in ["*.jpg", "*.jpeg", "*.png", "*.webp", "*.JPG", "*.PNG"]:
-                found = glob.glob(os.path.join(val, ext))
-                if found:
-                    target_file = found[0]
-                    break
+    triage_cards_container = ft.Column(spacing=10, scroll=ft.ScrollMode.ALWAYS, expand=True)
 
-    if not target_file:
-        target_file = find_any_local_logo()
+    def load_live_triage_feed():
+        triage_cards_container.controls.clear()
+        pending_records = []
 
-    if target_file:
-        b64 = get_base64_from_file(target_file)
-        if b64:
-            return ft.Container(
-                content=ft.Image(src_base64=b64, height=height, fit=ft.ImageFit.CONTAIN),
-                bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-                padding=6,
-                border_radius=6,
-                alignment=ft.alignment.center
-            )
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT i.*, u.first_name AS sales_first_name, u.last_name AS sales_last_name
+                    FROM intake_requests i
+                    LEFT JOIN users u ON i.sales_rep_email = u.user_email
+                    WHERE i.triage_status IN ('Unassigned', 'PENDING_TRIAGE', 'Pending')
+                    ORDER BY i.submission_timestamp DESC
+                """)
+                for row in cursor.fetchall():
+                    r_dict = dict(row)
+                    r_dict["drive_id"] = f"FLD-GDRV-{r_dict.get('tbc_job_number') or 'NEW'}"
+                    pending_records.append(r_dict)
+        except Exception as err:
+            print(f"Local triage query note: {err}")
 
-    return ft.Container(
-        content=ft.Row(
-            [
-                ft.Icon(ft.icons.BUSINESS, color=FieldFlowLightTheme.PINK_PRIMARY, size=24),
-                ft.Text("TBCo PROJECT SITE", weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PINK_PRIMARY, size=13)
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=8
-        ),
-        bgcolor=FieldFlowLightTheme.BG_PINK_TINT,
-        height=height,
-        border_radius=6,
-        border=ft.border.all(1, FieldFlowLightTheme.BORDER_PINK_EDGE),
-        alignment=ft.alignment.center
-    )
+        if not pending_records and db is not None:
+            try:
+                query = db.collection("intake_requests").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
+                for doc in query:
+                    record = doc.to_dict()
+                    record["request_id"] = doc.id
+                    job_num = record.get("tbc_job_number")
+                    if not record.get("drive_id"):
+                        record["drive_id"] = f"FLD-GDRV-{job_num or 'NEW'}"
+                    pending_records.append(record)
+            except Exception as err:
+                print(f"Firebase triage fetch error: {err}")
 
-
-# =========================================================================
-# 2. PROJECT CARD BUILDER
-# =========================================================================
-
-def build_project_card(
-    project_data: object,
-    is_grid_mode: bool = True,
-    on_edit_action=None,
-    on_drive_action=None,
-    on_service_request_action=None
-) -> ft.Card:
-    """
-    Renders a project card container for Projects Registry in Grid or List mode.
-    Clicking non-button surface space opens the multi-tab detail modal.
-    """
-    if isinstance(project_data, dict):
-        job_num = project_data.get("tbc_job_number", "123456XX")
-        name = project_data.get("project_name", "Service Project")
-        st1 = project_data.get("street_address_1", "")
-        c_city = project_data.get("city", "")
-        c_state = project_data.get("state", "")
-
-        address = f"{st1}, {c_city}, {c_state}".strip(", ") if st1 else project_data.get("site_name", "Pending Address")
-
-        client = project_data.get("contractor_company_name", "Partner")
-        acct_no = project_data.get("tbco_account_number", "N/A")
-        site_name = project_data.get("site_name", name)
-        
-        raw_drive_id = project_data.get("drive_id")
-        if not raw_drive_id or str(raw_drive_id).strip() in ["", "None", "FLD-0", "FLD-DRIVE-123456XX"]:
-            drive_id = f"FLD-GDRV-{job_num}"
-        else:
-            drive_id = str(raw_drive_id).strip()
-
-        photo_url = project_data.get("photo_url", "")
-
-        pm_f = project_data.get("pm_first_name", "")
-        pm_l = project_data.get("pm_last_name", "")
-        pm_em = project_data.get("pm_email", "")
-        pm_ph = project_data.get("pm_phone", "")
-
-        sales_em = project_data.get("sales_rep_email", "")
-        sales_ph = project_data.get("sales_rep_phone", "")
-        team_code = project_data.get("team_code", "")
-    else:
-        job_num, name, address, client, acct_no, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "N/A", "FLD-GDRV-123456XX", ""
-        st1, c_city, c_state = "", "", ""
-        site_name = name
-        pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
-        sales_em, sales_ph, team_code = "", "", ""
-
-    pm_full_name = f"{pm_f} {pm_l}".strip() or "Unassigned PM"
-
-    prefill_payload = {
-        "tbc_job_number": job_num,
-        "project_name": name,
-        "contractor_company_name": client,
-        "tbco_account_number": acct_no,
-        "site_name": site_name,
-        "street_address_1": st1,
-        "city": c_city,
-        "state": c_state,
-        "pm_first_name": pm_f,
-        "pm_last_name": pm_l,
-        "pm_email": pm_em,
-        "pm_phone": pm_ph,
-        "sales_rep_email": sales_em,
-        "sales_rep_phone": sales_ph,
-        "team_code": team_code,
-        "drive_id": drive_id,
-        "photo_url": photo_url
-    }
-
-    def handle_service_request_click(e):
-        if on_service_request_action:
-            on_service_request_action(prefill_payload)
-
-    def handle_drive_click(e):
-        if on_drive_action:
-            on_drive_action(e)
-
-    def handle_edit_click(e):
-        if on_edit_action:
-            on_edit_action(project_data)
-
-    if is_grid_mode:
-        img_control = build_project_image_control(photo_url, height=120)
-        return ft.Card(
-            content=ft.Container(
-                on_click=handle_edit_click,
-                ink=True,
-                padding=12,
-                bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-                border_radius=8,
-                width=350,
-                border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
-                shadow=FieldFlowLightTheme.get_card_shadow(),
-                content=ft.Column(
-                    [
-                        img_control,
-                        ft.Row(
-                            [
-                                ft.Text(f"Job #{job_num}", size=16, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
-                                ft.Container(
-                                    content=ft.Text(f"Acct: {acct_no}", size=10, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.ACCENT_BLUE),
-                                    bgcolor=FieldFlowLightTheme.BG_BLUE_TINT,
-                                    padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                                    border_radius=4
-                                )
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                        ),
-                        ft.Text(client, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=14),
-                        ft.Text(f"{name} ({address})", size=12, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True),
-                        ft.Row(
-                            [
-                                ft.Icon(ft.icons.PERSON_OUTLINE, size=14, color=FieldFlowLightTheme.ACCENT_BLUE),
-                                build_truncating_text(f"PM: {pm_full_name}" + (f" ({pm_em})" if pm_em else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
-                            ],
-                            spacing=4
-                        ),
-                        ft.Row(
-                            [
-                                ft.Icon(ft.icons.BADGE_OUTLINED, size=14, color=FieldFlowLightTheme.PINK_PRIMARY),
-                                build_truncating_text(f"Sales: {sales_em or 'N/A'}" + (f" [{team_code}]" if team_code else ""), 11, False, FieldFlowLightTheme.TEXT_MUTED)
-                            ],
-                            spacing=4
-                        ),
-                        ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
-                        ft.Row(
-                            [
-                                ft.OutlinedButton(
-                                    "Drive",
-                                    icon=ft.icons.LAUNCH,
-                                    on_click=handle_drive_click,
-                                    style=FieldFlowLightTheme.get_secondary_button_style()
-                                ),
-                                ft.OutlinedButton(
-                                    "Edit",
-                                    icon=ft.icons.EDIT,
-                                    on_click=handle_edit_click,
-                                    style=FieldFlowLightTheme.get_secondary_button_style()
-                                ),
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                        ),
-                        ft.ElevatedButton(
-                            "+ Service Request",
-                            icon=ft.icons.POST_ADD,
-                            on_click=handle_service_request_click,
-                            style=FieldFlowLightTheme.get_primary_button_style()
-                        )
-                    ],
-                    spacing=6
+        if not pending_records:
+            triage_cards_container.controls.append(
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.icons.CHECK_CIRCLE_OUTLINE, color=FieldFlowLightTheme.PRIMARY_GREEN, size=20), 
+                        ft.Text("Inbox Clear! All tickets assigned.", size=13, color=FieldFlowLightTheme.PRIMARY_GREEN)
+                    ]),
+                    bgcolor=FieldFlowLightTheme.BG_GREEN_TINT, padding=12, border_radius=6, border=ft.border.all(1, FieldFlowLightTheme.PRIMARY_GREEN)
                 )
             )
-        )
-    else:
-        small_img = ft.Container(
-            content=build_project_image_control(photo_url, height=48),
-            width=70,
-            height=48,
-            border_radius=4,
-            clip_behavior=ft.ClipBehavior.HARD_EDGE
-        )
+            page.update()
+            return
 
-        return ft.Card(
-            content=ft.Container(
-                on_click=handle_edit_click,
-                ink=True,
-                padding=10,
-                bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-                border_radius=8,
-                width=1180,
-                border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
-                shadow=FieldFlowLightTheme.get_card_shadow(),
-                content=ft.Row(
-                    [
-                        small_img,
-                        ft.Column(
-                            [
-                                ft.Row(
-                                    [
-                                        ft.Text(f"Job #{job_num}", size=14, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
-                                        ft.Text(name or f"Service: {client}", weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, size=13, no_wrap=True)
-                                    ],
-                                    spacing=10
-                                ),
-                                ft.Text(f"Client: {client} ({acct_no})   |   PM: {pm_full_name} ({pm_em or 'N/A'})   |   {address}", size=11, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True)
-                            ],
-                            spacing=2,
-                            expand=True
-                        ),
-                        ft.Row(
-                            [
-                                ft.ElevatedButton(
-                                    "+ Service Request",
-                                    icon=ft.icons.POST_ADD,
-                                    on_click=handle_service_request_click,
-                                    style=FieldFlowLightTheme.get_primary_button_style()
-                                ),
-                                ft.IconButton(
-                                    icon=ft.icons.FOLDER_OUTLINED,
-                                    icon_color=FieldFlowLightTheme.PINK_PRIMARY,
-                                    tooltip="Open Drive Folder",
-                                    on_click=handle_drive_click
-                                ),
-                                ft.IconButton(
-                                    icon=ft.icons.EDIT_OUTLINED,
-                                    icon_color=FieldFlowLightTheme.TEXT_PRIMARY,
-                                    tooltip="Edit Project Details",
-                                    on_click=handle_edit_click
-                                ),
-                            ],
-                            spacing=6
-                        )
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER
-                )
+        for record in pending_records:
+            drive_id = record.get("drive_id") or f"FLD-GDRV-{record.get('tbc_job_number', 'NEW')}"
+
+            card_tech_dropdown = ft.Dropdown(
+                label="Assign Technician*",
+                hint_text="-- Choose Tech --",
+                options=get_tech_options(),
+                border_color=FieldFlowLightTheme.BORDER_PINK_EDGE,
+                text_size=12,
+                dense=True,
+                expand=False
             )
-        )
 
+            card_date_input = ft.TextField(
+                label="Scheduled Date",
+                value=datetime.now().strftime("%Y-%m-%d"),
+                border_color=FieldFlowLightTheme.BORDER_PINK_EDGE,
+                text_size=12,
+                dense=True,
+                expand=True
+            )
 
-# =========================================================================
-# 3. SERVICE TICKET CARD BUILDER
-# =========================================================================
+            card_date_btn = ft.IconButton(
+                icon=ft.icons.CALENDAR_MONTH,
+                icon_color=FieldFlowLightTheme.PINK_PRIMARY,
+                tooltip="Pick Date",
+                on_click=lambda e, tf=card_date_input: trigger_date_picker(tf)
+            )
 
-def build_standard_ticket_card(
-    record_data: dict,
-    card_context: str = "triage",
-    card_tech_dropdown=None,
-    card_date_input=None,
-    card_date_btn=None,
-    on_primary_action=None,
-    on_details_action=None,
-    on_drive_action=None,
-    page: ft.Page = None
-) -> ft.Container:
-    """Renders ticket cards consuming canonical key names directly."""
-    
-    job_num = record_data.get("tbc_job_number", "123456XX")
-    contractor = record_data.get("contractor_company_name", "Unspecified Client")
-    site_campus = record_data.get("site_name", "Site Campus")
-    project_name = record_data.get("project_name", "Service Request")
+            card = build_standard_ticket_card(
+                record_data=record,
+                card_context="triage",
+                card_tech_dropdown=card_tech_dropdown,
+                card_date_input=card_date_input,
+                card_date_btn=card_date_btn,
+                on_primary_action=lambda e, r=record, td=card_tech_dropdown, di=card_date_input: dispatch_from_triage_card(r, td, di),
+                on_details_action=lambda e, r=record: open_service_ticket_detail(r),
+                on_drive_action=lambda e, dr=drive_id: open_drive_local(e, dr),
+                page=page
+            )
+            triage_cards_container.controls.append(card)
+        page.update()
 
-    street = record_data.get("street_address_1", "")
-    city = record_data.get("city", "")
-    state = record_data.get("state", "")
-    
-    if street and city and state:
-        address_display = f"{street}, {city}, {state}"
-    elif street:
-        address_display = street
-    elif city and state:
-        address_display = f"{city}, {state}"
-    else:
-        address_display = "Pending Address"
-
-    description = record_data.get("issue_description", "Service Call")
-    status = record_data.get("triage_status", record_data.get("status", "Unassigned"))
-    req_id = record_data.get("request_id", "REQ-NEW")
-
-    sales_f = str(record_data.get("sales_first_name") or "").strip()
-    sales_l = str(record_data.get("sales_last_name") or "").strip()
-    sales_email = record_data.get("sales_rep_email", "")
-    
-    if sales_f or sales_l:
-        sales_full_name = f"{sales_f} {sales_l}".strip()
-    elif sales_email:
-        sales_full_name = sales_email.split("@")[0].replace(".", " ").title()
-    else:
-        sales_full_name = "Unassigned Sales Rep"
-
-    cnt_f = str(record_data.get("project_site_contact_first_name") or "").strip()
-    cnt_l = str(record_data.get("project_site_contact_last_name") or "").strip()
-    cnt_phone = record_data.get("project_site_contact_phone", "N/A")
-    
-    if cnt_f or cnt_l:
-        cnt_full_name = f"{cnt_f} {cnt_l}".strip()
-    else:
-        cnt_full_name = "Site Contact (N/A)"
-
-    badge_bg, badge_color = FieldFlowLightTheme.resolve_status_badge_colors(status)
-
-    status_badge = ft.Container(
-        content=ft.Text(status, size=10, weight=ft.FontWeight.BOLD, color=badge_color),
-        bgcolor=badge_bg, padding=ft.padding.symmetric(horizontal=8, vertical=3), border_radius=4
+    intake_form_widget = build_service_intake_form(
+        page,
+        get_tech_options_fn=get_tech_options,
+        on_success_callback=lambda payload: [
+            setattr(intake_modal, 'open', False),
+            load_live_triage_feed(),
+            refresh_calendar_fn(),
+            execute_live_search(None)
+        ]
     )
 
-    line_1 = ft.Row([build_truncating_text(f"Job #{job_num} • {contractor}", 12, True, FieldFlowLightTheme.ACCENT_BLUE), status_badge], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-    line_2 = ft.Row([build_truncating_text(f"{project_name} ({site_campus})", 13, True, FieldFlowLightTheme.TEXT_PRIMARY)])
-    line_3 = ft.Row([build_truncating_text(f"📍 {address_display} • 🔧 {description}", 11, False, FieldFlowLightTheme.TEXT_MUTED)])
-    line_4a = ft.Row([ft.Icon(ft.icons.PERSON_OUTLINE, 14, FieldFlowLightTheme.ACCENT_BLUE), build_truncating_text(f"Sales Rep: {sales_full_name} ({sales_email})" if sales_email else f"Sales Rep: {sales_full_name}", 11, False, FieldFlowLightTheme.TEXT_MUTED)], spacing=4)
-    line_4b = ft.Row([ft.Icon(ft.icons.PHONE, 14, FieldFlowLightTheme.PRIMARY_GREEN), build_truncating_text(f"Site Contact: {cnt_full_name} ({cnt_phone})", 11, False, FieldFlowLightTheme.TEXT_MUTED)], spacing=4)
-
-    footer_ref = ft.Text(f"Tracking Ref: {req_id}", size=10, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
-
-    action_controls = []
-    if card_context == "triage" and card_tech_dropdown and card_date_input and card_date_btn:
-        tech_wrapper = ft.Container(content=card_tech_dropdown, padding=ft.padding.only(top=4, bottom=4))
-        date_wrapper = ft.Container(content=ft.Row([card_date_input, card_date_btn], spacing=6), padding=ft.padding.only(top=2, bottom=6))
-        
-        secondary_actions = ft.Row(
-            [
-                ft.OutlinedButton(
-                    "📂 Drive",
-                    icon=ft.icons.LAUNCH,
-                    style=FieldFlowLightTheme.get_secondary_button_style(),
-                    on_click=on_drive_action,
-                    expand=True
-                ),
-                ft.OutlinedButton(
-                    "✏️ Edit",
-                    icon=ft.icons.EDIT_NOTE,
-                    style=FieldFlowLightTheme.get_secondary_button_style(),
-                    on_click=on_details_action,
-                    expand=True
-                )
-            ],
-            spacing=8
-        )
-
-        dispatch_btn = ft.ElevatedButton("⚡ Assign & Dispatch", style=FieldFlowLightTheme.get_primary_button_style(), on_click=on_primary_action)
-        action_controls.extend([tech_wrapper, date_wrapper, secondary_actions, dispatch_btn])
-
-    card_click_handler = on_details_action or on_primary_action
-
-    return ft.Container(
-        on_click=card_click_handler,
-        ink=True if card_click_handler else False,
-        content=ft.Column(
-            [line_1, line_2, line_3, line_4a, line_4b, ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8)] + action_controls + [footer_ref],
-            spacing=8
-        ),
+    intake_modal = ft.AlertDialog(
         bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-        padding=14,
+        title=ft.Row([
+            ft.Icon(ft.icons.POST_ADD, color=FieldFlowLightTheme.PINK_PRIMARY, size=26), 
+            ft.Text("New Service Request Intake", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
+        ]),
+        content=ft.Container(content=intake_form_widget, width=760, height=540, padding=0),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: [setattr(intake_modal, 'open', False), page.update()]),
+            ft.ElevatedButton("Create Service Request", style=FieldFlowLightTheme.get_primary_button_style(), on_click=lambda e: intake_form_widget.submit_form(e) if hasattr(intake_form_widget, 'submit_form') else None)
+        ]
+    )
+    page.overlay.append(intake_modal)
+
+    def open_service_request_for_project(proj_record):
+        job_num = proj_record.get("tbc_job_number", "") if isinstance(proj_record, dict) else (proj_record[0] if proj_record else "")
+
+        is_valid_proj, proj_msg = validate_project_space_exists(job_num)
+        if not is_valid_proj:
+            show_toast_local(proj_msg, kind="error")
+            return
+
+        if hasattr(intake_form_widget, "populate_data"):
+            intake_form_widget.populate_data(proj_record)
+
+        intake_modal.open = True
+        show_toast_local(f"Initiating Service Request for Job #{job_num}", kind="info")
+        page.update()
+
+    project_form_widget = build_project_creation_form(
+        page,
+        on_success_callback=lambda payload: [
+            setattr(direct_project_modal, 'open', False),
+            execute_live_search(None)
+        ]
+    )
+
+    direct_project_modal = ft.AlertDialog(
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        title=ft.Row([
+            ft.Icon(ft.icons.CREATE_NEW_FOLDER, color=FieldFlowLightTheme.PRIMARY_GREEN, size=26), 
+            ft.Text("Create New Project Folder", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
+        ]),
+        content=ft.Container(content=project_form_widget, width=520, padding=10),
+        actions=[ft.TextButton("Cancel", on_click=lambda _: [setattr(direct_project_modal, 'open', False), page.update()])]
+    )
+    page.overlay.append(direct_project_modal)
+
+    ticket_detail_modal, populate_ticket_data = build_ticket_detail_modal(
+        page=page, get_tech_options_fn=get_tech_options, trigger_date_picker_fn=trigger_date_picker,
+        on_save_callback=lambda payload: [load_live_triage_feed(), refresh_calendar_fn(), execute_live_search(None)]
+    )
+    page.overlay.append(ticket_detail_modal)
+
+    def open_service_ticket_detail(req_data):
+        req_id = req_data.get("request_id")
+        job_num = req_data.get("tbc_job_number")
+        row, dispatch_row = None, None
+        
+        if db is not None:
+            try:
+                if req_id:
+                    doc = db.collection("intake_requests").document(req_id).get()
+                    if doc.exists: row = doc.to_dict()
+                if not row and job_num:
+                    query = db.collection("intake_requests").where("tbc_job_number", "==", job_num).limit(1).stream()
+                    for d in query: row = d.to_dict()
+            except Exception as err:
+                print(f"Error loading ticket record: {err}")
+
+        if row: req_data = row
+        populate_ticket_data(req_data, dispatch_row)
+        ticket_detail_modal.open = True
+        page.update()
+
+    project_detail_modal, populate_project_data = build_project_detail_modal(
+        page=page, open_drive_link_fn=open_drive_local, show_toast_fn=show_toast_local,
+        on_save_callback=lambda payload: execute_live_search(None)
+    )
+    page.overlay.append(project_detail_modal)
+
+    def open_edit_project_dialog(proj_row):
+        populate_project_data(
+            proj_row,
+            contractor_options=get_contractor_options(),
+            location_options=get_location_options(),
+            sales_options=get_salesperson_options()
+        )
+        project_detail_modal.open = True
+        page.update()
+
+    calendar_widget, refresh_calendar_fn = build_calendar_widget(page=page, on_ticket_select_callback=open_service_ticket_detail)
+
+    def dispatch_from_triage_card(req_data, tech_dropdown, date_input):
+        is_valid_role, role_msg = validate_user_role_permission("admin@tombarrow.com", "ADMIN_ACTION")
+        if not is_valid_role:
+            show_toast_local(role_msg, kind="error")
+            return
+
+        selected_tech = tech_dropdown.value
+        scheduled_date = date_input.value.strip() if date_input.value else datetime.now().strftime("%Y-%m-%d")
+
+        if not selected_tech:
+            show_toast_local("Please select a technician from the dropdown!", kind="warning")
+            return
+
+        req_id = req_data.get("request_id") or "REQ-NEW"
+        job_num = req_data.get("tbc_job_number") or "123456XX"
+        job_type = req_data.get("request_type") or "VFD Startup"
+        job_id = f"JOB-{job_num}"
+
+        try:
+            # 1. Update SQLite Local Storage
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE intake_requests
+                    SET triage_status = 'Dispatched', tbc_job_number = ?
+                    WHERE request_id = ?
+                """, (job_num, req_id))
+
+                cursor.execute("""
+                    INSERT OR REPLACE INTO dispatches (job_id, tbc_job_number, technician_email, scheduled_time, status, job_type)
+                    VALUES (?, ?, ?, ?, 'Scheduled', ?)
+                """, (job_id, job_num, selected_tech, scheduled_date, job_type))
+
+                # Query full intake details to construct rich Google Calendar payload
+                cursor.execute("SELECT * FROM intake_requests WHERE request_id = ?", (req_id,))
+                full_row = cursor.fetchone()
+                full_dict = dict(full_row) if full_row else req_data
+
+                conn.commit()
+
+            # 2. Update Cloud Firestore Storage
+            if db is not None:
+                db.collection("intake_requests").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
+
+            # 3. Publish Rich Ticket Payload to Google Calendar
+            try:
+                from src.backend.calendar_manager import GoogleCalendarManager, build_gcal_ticket_description
+                cal_manager = GoogleCalendarManager()
+
+                street = full_dict.get("street_address_1", "")
+                city = full_dict.get("city", "")
+                state = full_dict.get("state", "")
+                zip_code = full_dict.get("postal_code", "")
+                full_address = f"{street}, {city}, {state} {zip_code}".strip(", ")
+
+                rich_desc = build_gcal_ticket_description(full_dict)
+
+                # Format start/end ISO timestamps for an 8 AM - 12 PM window
+                clean_date = scheduled_date[:10] if len(scheduled_date) >= 10 else datetime.now().strftime("%Y-%m-%d")
+                start_iso = f"{clean_date}T08:00:00Z"
+                end_iso = f"{clean_date}T12:00:00Z"
+
+                cal_manager.publish_appointment(
+                    job_id=job_id,
+                    summary=f"Job #{job_num} - {full_dict.get('project_name', 'Service Call')}",
+                    location=full_address,
+                    description=rich_desc,
+                    start_iso=start_iso,
+                    end_iso=end_iso
+                )
+            except Exception as cal_err:
+                print(f"Google Calendar sync note: {cal_err}")
+
+            show_toast_local(f"Dispatched Job #{job_num} to {selected_tech} & synced to Google Calendar!", kind="success")
+            load_live_triage_feed()
+            refresh_calendar_fn()
+            execute_live_search(None)
+            refresh_audit_trail_table()
+        except Exception as err:
+            show_toast_local(f"Dispatch Error: {err}", kind="error")
+
+    left_triage_panel = ft.Container(
+        content=ft.Column([
+            ft.Text("1. TRIAGE INBOX", size=TITLE_FONT_SIZE, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PINK_PRIMARY),
+            triage_cards_container
+        ], expand=True, spacing=12),
+        width=380,
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        padding=16,
+        border_radius=10,
+        border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
+        shadow=FieldFlowLightTheme.get_card_shadow()
+    )
+
+    right_calendar_panel = ft.Container(
+        content=ft.Column([
+            ft.Text("2. DISPATCH & CALENDAR SCHEDULER", size=TITLE_FONT_SIZE, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PRIMARY_GREEN),
+            calendar_widget
+        ], expand=True, spacing=12),
+        expand=True,
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        padding=16,
+        border_radius=10,
+        border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
+        shadow=FieldFlowLightTheme.get_card_shadow()
+    )
+
+    side_by_side_cockpit = ft.Row(
+        controls=[left_triage_panel, right_calendar_panel],
+        spacing=16,
+        vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+        expand=True
+    )
+
+    projects_list_container = ft.Row(wrap=True, spacing=12)
+
+    def toggle_grid_list_view_mode(e):
+        projects_view_filter["is_grid"] = not projects_view_filter["is_grid"]
+        if projects_view_filter["is_grid"]:
+            view_mode_button.icon = ft.icons.VIEW_LIST
+            view_mode_button.tooltip = "Switch to Compact List View"
+        else:
+            view_mode_button.icon = ft.icons.VIEW_MODULE
+            view_mode_button.tooltip = "Switch to Grid View"
+        execute_live_search(None)
+
+    view_mode_button = ft.IconButton(
+        icon=ft.icons.VIEW_LIST,
+        icon_color=FieldFlowLightTheme.PINK_PRIMARY,
+        tooltip="Switch to Compact List View",
+        on_click=toggle_grid_list_view_mode
+    )
+
+    search_input = ft.TextField(
+        label="Search Client Footprints...",
+        prefix_icon=ft.icons.SEARCH,
+        border_color=FieldFlowLightTheme.BORDER_PINK_EDGE,
+        expand=True,
+        on_submit=lambda e: execute_live_search(e)
+    )
+
+    def open_new_request_dialog(e=None):
+        if hasattr(intake_form_widget, "clear_form"):
+            intake_form_widget.clear_form()
+        intake_modal.open = True
+        page.update()
+
+    new_request_button = ft.ElevatedButton(
+        "+ New Service Request",
+        icon=ft.icons.ADD,
+        style=FieldFlowLightTheme.get_primary_button_style(),
+        on_click=open_new_request_dialog
+    )
+
+    def open_new_project_dialog(e=None):
+        if hasattr(project_form_widget, "clear_form"):
+            project_form_widget.clear_form()
+        direct_project_modal.open = True
+        page.update()
+
+    new_project_button = ft.ElevatedButton(
+        "+ New Project",
+        icon=ft.icons.CREATE_NEW_FOLDER,
+        style=ft.ButtonStyle(bgcolor=FieldFlowLightTheme.PINK_PRIMARY, color="white"),
+        on_click=open_new_project_dialog
+    )
+
+    top_search_bar = ft.Container(
+        content=ft.Row([search_input, view_mode_button, new_request_button, new_project_button], spacing=12), 
+        padding=12,
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
         border_radius=8,
         border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
         shadow=FieldFlowLightTheme.get_card_shadow()
     )
 
+    def execute_live_search(e):
+        """Queries local SQLite database first for relational accuracy and immediate UI updates."""
+        search_query = search_input.value.strip().lower() if search_input and search_input.value else ""
+        projects_list_container.controls.clear()
+        is_grid_mode = projects_view_filter["is_grid"]
 
-# =========================================================================
-# 4. SITE ASSET, VISIT HISTORY, & USER CARD BUILDERS
-# =========================================================================
+        db_rows = []
 
-def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_action=None) -> ft.Container:
-    name = str(asset_data.get("equipment_tag") or asset_data.get("asset_name", "Site Equipment"))
-    model = str(asset_data.get("model_number", "N/A"))
-    serial = str(asset_data.get("serial_number", "N/A"))
+        # Step 1: Local-First Query with full Relational JOINs across 5 tables
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        p.tbc_job_number,
+                        p.project_name,
+                        p.site_name,
+                        p.drive_id,
+                        p.stage,
+                        c.company_name AS contractor_company_name,
+                        c.tbco_account_number,
+                        loc.street_address_1,
+                        loc.street_address_2,
+                        loc.city,
+                        loc.state,
+                        loc.postal_code,
+                        loc.country,
+                        cnt.first_name AS pm_first_name,
+                        cnt.last_name AS pm_last_name,
+                        cnt.email AS pm_email,
+                        cnt.phone AS pm_phone,
+                        ir.sales_rep_email,
+                        ir.sales_rep_phone,
+                        ir.team_code
+                    FROM projects p
+                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                    LEFT JOIN locations loc ON p.site_name = loc.site_name
+                    LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
+                    LEFT JOIN (
+                        SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
+                        FROM intake_requests
+                        GROUP BY tbc_job_number
+                    ) ir ON p.tbc_job_number = ir.tbc_job_number
+                """)
+                for row in cursor.fetchall():
+                    r_dict = dict(row)
+                    if not r_dict.get("drive_id"):
+                        r_dict["drive_id"] = f"FLD-DRIVE-{r_dict.get('tbc_job_number')}"
 
-    badge_bg, badge_color = FieldFlowLightTheme.resolve_status_badge_colors("Completed" if is_serviced else "Unassigned")
+                    job_num = str(r_dict.get("tbc_job_number", "")).lower()
+                    p_name = str(r_dict.get("project_name", "")).lower()
+                    s_name = str(r_dict.get("site_name", "")).lower()
+                    c_name = str(r_dict.get("contractor_company_name", "")).lower()
 
-    return ft.Container(
-        content=ft.Row([
-            ft.Column([
-                ft.Text(f"⚙️ {name}", weight=ft.FontWeight.BOLD, size=13, color=FieldFlowLightTheme.TEXT_PRIMARY),
-                ft.Text(f"Model: {model} | S/N: {serial}", size=11, color=FieldFlowLightTheme.ACCENT_BLUE),
-            ], spacing=2, expand=True),
-            ft.Container(
-                content=ft.Text("SERVICED ✅" if is_serviced else "PENDING", size=10, weight=ft.FontWeight.BOLD, color=badge_color),
-                bgcolor=badge_bg,
-                padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                border_radius=4
+                    if not search_query or (search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name):
+                        db_rows.append(r_dict)
+        except Exception as err:
+            print(f"Projects local search query error: {err}")
+
+        # Step 2: Fallback to Firestore stream ONLY if local SQLite yields no records
+        if not db_rows and db is not None:
+            try:
+                projects_stream = db.collection("projects").stream()
+                for doc in projects_stream:
+                    p_dict = doc.to_dict()
+                    p_dict["tbc_job_number"] = doc.id or p_dict.get("tbc_job_number")
+                    
+                    job_num = str(p_dict.get("tbc_job_number", "")).lower()
+                    p_name = str(p_dict.get("project_name", "")).lower()
+                    s_name = str(p_dict.get("site_name", "")).lower()
+                    c_name = str(p_dict.get("contractor_company_name", "")).lower()
+
+                    if not search_query or (search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name):
+                        if not p_dict.get("drive_id"):
+                            p_dict["drive_id"] = f"FLD-DRIVE-{p_dict.get('tbc_job_number')}"
+                        db_rows.append(p_dict)
+            except Exception as cloud_err:
+                print(f"Cloud project search offline/error: {cloud_err}")
+
+        # Step 3: Build card controls from fresh records
+        for row in db_rows:
+            p_card = build_project_card(
+                project_data=row,
+                is_grid_mode=is_grid_mode,
+                on_edit_action=lambda e, r=row: open_edit_project_dialog(r),
+                on_drive_action=lambda e, d_id=row.get("drive_id", ""): open_drive_local(e, d_id),
+                on_service_request_action=lambda e, r=row: open_service_request_for_project(r)
             )
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        bgcolor=FieldFlowLightTheme.SURFACE_HOVER, padding=10, border_radius=6,
-        border=ft.border.all(1, FieldFlowLightTheme.BORDER_SUBTLE), on_click=on_click_action,
-        ink=True if on_click_action else False
+            projects_list_container.controls.append(p_card)
+        
+        page.update()
+
+    projects_view = ft.Container(
+        content=ft.Column(
+            [projects_list_container],
+            scroll=ft.ScrollMode.ALWAYS,
+            expand=True,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH
+        ),
+        padding=16,
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        border_radius=8,
+        border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
+        shadow=FieldFlowLightTheme.get_card_shadow(),
+        expand=True
     )
 
-
-def build_visit_history_card(visit_data: dict, on_click_action=None) -> ft.Container:
-    v_date = str(visit_data.get("scheduled_time", "Past Date"))
-    v_tech = str(visit_data.get("technician_email", "Tech Unassigned"))
-    v_status = str(visit_data.get("status", "Completed"))
-
-    v_badge_bg, v_badge_color = FieldFlowLightTheme.resolve_status_badge_colors(v_status)
-
-    return ft.Container(
-        content=ft.Row([
-            ft.Column([
-                ft.Text(f"📅 Visit Date: {v_date}", weight=ft.FontWeight.BOLD, size=12, color=FieldFlowLightTheme.TEXT_PRIMARY),
-                ft.Text(f"👨‍🔧 Tech: {v_tech}", size=11, color=FieldFlowLightTheme.TEXT_MUTED),
-            ], spacing=2, expand=True),
-            ft.Container(
-                content=ft.Text(v_status, size=10, color=v_badge_color, weight=ft.FontWeight.BOLD),
-                bgcolor=v_badge_bg, padding=ft.padding.symmetric(horizontal=8, vertical=3), border_radius=10
-            )
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        bgcolor=FieldFlowLightTheme.SURFACE_HOVER, padding=10, border_radius=6,
-        border=ft.border.all(1, FieldFlowLightTheme.BORDER_SUBTLE), on_click=on_click_action,
-        ink=True if on_click_action else False
+    user_email_input = ft.TextField(label="User Email*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
+    user_first_name_input = ft.TextField(label="First Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
+    user_last_name_input = ft.TextField(label="Last Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
+    user_role_dropdown = ft.Dropdown(
+        label="Assigned Role*",
+        options=[
+            ft.dropdown.Option("Admin", "Admin"),
+            ft.dropdown.Option("Technician", "Technician"),
+            ft.dropdown.Option("Sales", "Sales")
+        ],
+        value="Sales",
+        border_color=FieldFlowLightTheme.BORDER_PINK_EDGE,
+        expand=True
     )
 
+    users_list_container = ft.Row(wrap=True, spacing=12)
 
-def build_user_card(user_data: dict, on_edit_action=None) -> ft.Card:
-    email = user_data.get("user_email", "N/A")
-    first_name = user_data.get("first_name", "")
-    last_name = user_data.get("last_name", "")
-    full_name = f"{first_name} {last_name}".strip() or email
-    role = user_data.get("role", "Sales")
-    status = user_data.get("active_status", "Active")
-
-    if role == "Admin":
-        role_bg = FieldFlowLightTheme.BG_PINK_TINT
-        role_color = FieldFlowLightTheme.PINK_PRIMARY
-    elif role == "Technician":
-        role_bg = FieldFlowLightTheme.BG_GREEN_TINT
-        role_color = FieldFlowLightTheme.PRIMARY_GREEN
-    else:
-        role_bg = FieldFlowLightTheme.BG_BLUE_TINT
-        role_color = FieldFlowLightTheme.ACCENT_BLUE
-
-    status_bg, status_color = FieldFlowLightTheme.resolve_status_badge_colors(
-        "Completed" if status == "Active" else ("Pending" if status == "Inactive" else "Cancelled")
+    edit_user_email_input = ft.TextField(label="User Email (Read Only)", disabled=True, border_color=FieldFlowLightTheme.BORDER_PINK_EDGE)
+    edit_user_first_name_input = ft.TextField(label="First Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE)
+    edit_user_last_name_input = ft.TextField(label="Last Name*", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE)
+    edit_user_role_dropdown = ft.Dropdown(
+        label="Assigned Role*",
+        options=[
+            ft.dropdown.Option("Admin", "Admin"),
+            ft.dropdown.Option("Technician", "Technician"),
+            ft.dropdown.Option("Sales", "Sales")
+        ],
+        border_color=FieldFlowLightTheme.BORDER_PINK_EDGE
+    )
+    edit_user_status_dropdown = ft.Dropdown(
+        label="Account Status*",
+        options=[
+            ft.dropdown.Option("Active", "Active"),
+            ft.dropdown.Option("Inactive", "Inactive"),
+            ft.dropdown.Option("Archived", "Archived")
+        ],
+        border_color=FieldFlowLightTheme.BORDER_PINK_EDGE
     )
 
-    return ft.Card(
+    target_delete_email = {"email": ""}
+
+    def refresh_users_list(e=None):
+        users_list_container.controls.clear()
+        rows = []
+
+        if db is not None:
+            try:
+                users_stream = db.collection("users").stream()
+                for doc in users_stream:
+                    u_data = doc.to_dict()
+                    u_data["user_email"] = doc.id or u_data.get("user_email")
+                    rows.append(u_data)
+            except Exception as cloud_err:
+                print(f"Cloud fetch users offline/error: {cloud_err}")
+
+        if not rows:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT user_email, first_name, last_name, role, active_status FROM users ORDER BY first_name ASC")
+                    rows = [dict(r) for r in cursor.fetchall()]
+            except Exception as err:
+                print(f"Error fetching users: {err}")
+
+        if not rows:
+            users_list_container.controls.append(ft.Text("No user accounts found.", size=12, color=FieldFlowLightTheme.TEXT_MUTED))
+        else:
+            for r_dict in rows:
+                card = build_user_card(user_data=r_dict, on_edit_action=lambda e, u=r_dict: open_edit_user_dialog(u))
+                users_list_container.controls.append(card)
+
+        if page: page.update()
+
+    def save_user_account(e):
+        email = user_email_input.value.strip().lower() if user_email_input.value else ""
+        first_name = user_first_name_input.value.strip() if user_first_name_input.value else ""
+        last_name = user_last_name_input.value.strip() if user_last_name_input.value else ""
+        role = user_role_dropdown.value
+
+        if not email or not first_name:
+            show_toast_local("Email and First Name required.", kind="warning")
+            return
+
+        payload = {"user_email": email, "first_name": first_name, "last_name": last_name, "role": role, "active_status": "Active"}
+
+        if db is not None:
+            try: db.collection("users").document(email).set(payload, merge=True)
+            except Exception as err: print(f"Cloud user creation note: {err}")
+
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO users (user_email, first_name, last_name, role, active_status)
+                    VALUES (?, ?, ?, ?, 'Active')
+                    ON CONFLICT(user_email) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name, role = excluded.role
+                """, (email, first_name, last_name, role))
+                conn.commit()
+        except Exception as err: print(f"Local user cache note: {err}")
+
+        show_toast_local(f"User '{first_name} {last_name}' saved!", kind="success")
+        user_email_input.value, user_first_name_input.value, user_last_name_input.value = "", "", ""
+        refresh_users_list()
+
+    def save_edited_user_account(e):
+        email = edit_user_email_input.value
+        first_name = edit_user_first_name_input.value.strip() if edit_user_first_name_input.value else ""
+        last_name = edit_user_last_name_input.value.strip() if edit_user_last_name_input.value else ""
+        role = edit_user_role_dropdown.value
+        status = edit_user_status_dropdown.value
+
+        payload = {"first_name": first_name, "last_name": last_name, "role": role, "active_status": status}
+
+        if db is not None:
+            try: db.collection("users").document(email).set(payload, merge=True)
+            except Exception as err: print(f"Cloud user update note: {err}")
+
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE users SET first_name = ?, last_name = ?, role = ?, active_status = ? WHERE user_email = ?", (first_name, last_name, role, status, email))
+                conn.commit()
+        except Exception as err: print(f"Local user update note: {err}")
+
+        edit_user_modal.open = False
+        show_toast_local(f"User '{first_name}' updated!", kind="success")
+        refresh_users_list()
+
+    def archive_user_account(e):
+        email = edit_user_email_input.value
+        if db is not None:
+            try: db.collection("users").document(email).set({"active_status": "Archived"}, merge=True)
+            except Exception as err: print(f"Cloud archive note: {err}")
+
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE users SET active_status = 'Archived' WHERE user_email = ?", (email,))
+                conn.commit()
+        except Exception as err: print(f"Local archive note: {err}")
+
+        edit_user_modal.open = False
+        show_toast_local(f"User '{email}' archived.", kind="info")
+        refresh_users_list()
+
+    def confirm_delete_user_account(e):
+        email = target_delete_email["email"]
+        if not email: return
+
+        if db is not None:
+            try: db.collection("users").document(email).delete()
+            except Exception as err: print(f"Cloud delete note: {err}")
+
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM users WHERE user_email = ?", (email,))
+                conn.commit()
+        except Exception as err: print(f"Local delete note: {err}")
+
+        confirm_delete_modal.open = False
+        edit_user_modal.open = False
+        show_toast_local(f"User '{email}' deleted permanently.", kind="warning")
+        refresh_users_list()
+
+    confirm_delete_modal = ft.AlertDialog(
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        title=ft.Row([ft.Icon(ft.icons.WARNING_AMBER, color="red", size=24), ft.Text("Confirm Permanent Deletion", size=16, weight=ft.FontWeight.BOLD)]),
+        content=ft.Text("Are you sure you want to permanently delete this user account?", size=13),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: [setattr(confirm_delete_modal, 'open', False), page.update()]),
+            ft.ElevatedButton("Yes, Delete User", style=ft.ButtonStyle(bgcolor="red", color="white"), on_click=confirm_delete_user_account)
+        ]
+    )
+    page.overlay.append(confirm_delete_modal)
+
+    edit_user_modal = ft.AlertDialog(
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        title=ft.Row([ft.Icon(ft.icons.EDIT, color=FieldFlowLightTheme.PINK_PRIMARY, size=24), ft.Text("Edit User Account", size=18, weight=ft.FontWeight.BOLD)]),
         content=ft.Container(
-            padding=14,
-            bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-            border_radius=8,
-            width=350,
-            border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
-            shadow=FieldFlowLightTheme.get_card_shadow(),
-            on_click=on_edit_action,
-            ink=True if on_edit_action else False,
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Text(full_name, size=15, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY, expand=True),
-                            ft.Container(
-                                content=ft.Text(status, size=10, weight=ft.FontWeight.BOLD, color=status_color),
-                                bgcolor=status_bg,
-                                padding=ft.padding.symmetric(horizontal=8, vertical=3),
-                                border_radius=4
-                            )
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                    ),
-                    ft.Text(f"✉️ {email}", size=12, color=FieldFlowLightTheme.TEXT_MUTED, no_wrap=True),
-                    ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
-                    ft.Row(
-                        [
-                            ft.Container(
-                                content=ft.Text(f"Role: {role}", size=11, weight=ft.FontWeight.BOLD, color=role_color),
-                                bgcolor=role_bg,
-                                padding=ft.padding.symmetric(horizontal=10, vertical=4),
-                                border_radius=12
-                            ),
-                            ft.Icon(
-                                name=ft.icons.EDIT_OUTLINED,
-                                color=FieldFlowLightTheme.PINK_PRIMARY,
-                                tooltip="Edit User Account"
-                            )
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                    )
-                ],
-                spacing=6
-            )
-        )
+            content=ft.Column([edit_user_email_input, edit_user_first_name_input, edit_user_last_name_input, edit_user_role_dropdown, edit_user_status_dropdown], spacing=12, tight=True),
+            width=420, padding=10
+        ),
+        actions=[
+            ft.TextButton("Delete User", icon=ft.icons.DELETE, icon_color="red", on_click=lambda e: [setattr(target_delete_email, 'email', edit_user_email_input.value), setattr(confirm_delete_modal, 'open', True), page.update()]),
+            ft.TextButton("Archive", icon=ft.icons.ARCHIVE, icon_color="amber", on_click=archive_user_account),
+            ft.TextButton("Cancel", on_click=lambda _: [setattr(edit_user_modal, 'open', False), page.update()]),
+            ft.ElevatedButton("Save Changes", style=FieldFlowLightTheme.get_primary_button_style(), on_click=save_edited_user_account)
+        ]
     )
+    page.overlay.append(edit_user_modal)
+
+    def open_edit_user_dialog(user_row):
+        edit_user_email_input.value = user_row.get("user_email", "")
+        edit_user_first_name_input.value = user_row.get("first_name", "")
+        edit_user_last_name_input.value = user_row.get("last_name", "")
+        edit_user_role_dropdown.value = user_row.get("role", "Sales")
+        edit_user_status_dropdown.value = user_row.get("active_status", "Active")
+        edit_user_modal.open = True
+        page.update()
+
+    users_management_view = ft.Container(
+        content=ft.Column([
+            ft.Text("USER ACCOUNT GOVERNANCE", size=16, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PINK_PRIMARY),
+            ft.Row([user_email_input, user_first_name_input, user_last_name_input, user_role_dropdown], spacing=10),
+            ft.ElevatedButton("Save / Update User", style=FieldFlowLightTheme.get_primary_button_style(), on_click=save_user_account),
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            ft.Text("REGISTERED SYSTEM USERS", size=14, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY),
+            users_list_container
+        ], spacing=12, scroll=ft.ScrollMode.ALWAYS, expand=True),
+        padding=16, bgcolor=FieldFlowLightTheme.SURFACE_CARD, border_radius=8,
+        border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE), shadow=FieldFlowLightTheme.get_card_shadow(), expand=True
+    )
+
+    audit_table_container = ft.Column(spacing=6)
+    entity_filter_picker = ft.Dropdown(
+        label="Filter Entity Type",
+        options=[
+            ft.dropdown.Option("ALL", "All Entities"),
+            ft.dropdown.Option("PROJECT", "Projects"),
+            ft.dropdown.Option("INTAKE", "Intake Requests"),
+            ft.dropdown.Option("DISPATCH", "Dispatches"),
+            ft.dropdown.Option("USER", "Users")
+        ],
+        value="ALL", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE
+    )
+
+    def refresh_audit_trail_table(e=None):
+        audit_table_container.controls.clear()
+        selected_entity = entity_filter_picker.value
+
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                if selected_entity == "ALL":
+                    cursor.execute("SELECT log_id, user_email, entity_type, entity_id, timestamp, old_value, new_value FROM audit_log ORDER BY timestamp DESC LIMIT 50")
+                else:
+                    cursor.execute("SELECT log_id, user_email, entity_type, entity_id, timestamp, old_value, new_value FROM audit_log WHERE entity_type = ? ORDER BY timestamp DESC LIMIT 50", (selected_entity,))
+                
+                rows = cursor.fetchall()
+                if not rows:
+                    audit_table_container.controls.append(ft.Text("No audit log records found.", size=12, color=FieldFlowLightTheme.TEXT_MUTED))
+                else:
+                    for r in rows:
+                        audit_table_container.controls.append(
+                            ft.Container(
+                                content=ft.Row([
+                                    ft.Text(f"[{r['timestamp'][:19]}]", size=11, color=FieldFlowLightTheme.TEXT_MUTED),
+                                    ft.Text(f"{r['user_email'] or 'System'}", size=11, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PINK_PRIMARY),
+                                    ft.Text(f"{r['entity_type']} #{r['entity_id']}", size=11, color=FieldFlowLightTheme.TEXT_PRIMARY),
+                                    ft.Text(f"Value: {r['old_value']} -> {r['new_value']}", size=11, italic=True, color=FieldFlowLightTheme.PRIMARY_GREEN)
+                                ], spacing=10),
+                                padding=6, bgcolor=FieldFlowLightTheme.SURFACE_HOVER, border_radius=4
+                            )
+                        )
+        except Exception as err:
+            audit_table_container.controls.append(ft.Text(f"Error loading audit log: {err}", size=12, color=FieldFlowLightTheme.SUN_AMBER))
+
+        page.update()
+
+    entity_filter_picker.on_change = refresh_audit_trail_table
+
+    audit_trail_view = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Text("SYSTEM AUDIT TRAIL VIEWER", size=16, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.PRIMARY_GREEN),
+                entity_filter_picker
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            audit_table_container
+        ], spacing=12, scroll=ft.ScrollMode.ALWAYS),
+        padding=16, bgcolor=FieldFlowLightTheme.SURFACE_CARD, border_radius=8,
+        border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE), shadow=FieldFlowLightTheme.get_card_shadow(), expand=True
+    )
+
+    master_catalog_view = build_master_data_management_view(
+        page=page,
+        get_tech_options_fn=get_tech_options,
+        on_success_callback=lambda payload: execute_live_search(None)
+    )
+
+    tab_manager = ft.Tabs(
+        selected_index=0,
+        tabs=[
+            ft.Tab(text="Control Tower Cockpit", icon=ft.icons.DASHBOARD, content=side_by_side_cockpit),
+            ft.Tab(text="Projects Registry", icon=ft.icons.ASSIGNMENT, content=projects_view),
+            ft.Tab(text="User Management", icon=ft.icons.SUPERVISED_USER_CIRCLE, content=users_management_view),
+            ft.Tab(text="Master Catalog", icon=ft.icons.SETTINGS, content=master_catalog_view),
+            ft.Tab(text="Audit Trail", icon=ft.icons.RECEIPT_LONG, content=audit_trail_view),
+        ],
+        expand=True
+    )
+
+    page.add(ft.Column([top_search_bar, tab_manager], expand=True, spacing=8))
+    
+    load_live_triage_feed()
+    refresh_calendar_fn()
+    execute_live_search(None)
+    refresh_audit_trail_table()
+    refresh_users_list()
+
+    def auto_refresh_worker():
+        while True:
+            time.sleep(5)
+            try:
+                load_live_triage_feed()
+                refresh_calendar_fn()
+            except Exception as err:
+                print(f"Auto-refresh worker note: {err}")
+
+    refresh_thread = threading.Thread(target=auto_refresh_worker, daemon=True)
+    refresh_thread.start()
+
+
+if __name__ == "__main__":
+    assets_folder = os.path.join(CURRENT_DIR, "assets")
+    ft.app(target=main, assets_dir=assets_folder)
