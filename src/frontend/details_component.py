@@ -82,6 +82,9 @@ def build_project_detail_modal(
     Renders an interactive, tabbed Project Detail Modal displaying Core Vitals,
     associated Service Requests, Site Assets, and Field Dispatches using hybrid lookups.
     """
+    # Pre-declare variable in outer function scope to resolve static analysis undefined variable warnings
+    project_detail_modal_dialog = None
+
     active_project_state = {"tbc_job_number": None, "drive_id": None}
 
     def build_section_header(title_text: str, color_token=FieldFlowLightTheme.PINK_PRIMARY):
@@ -459,7 +462,8 @@ def build_project_detail_modal(
                     logging.error(f"Firestore project update error: {fs_err}")
 
             show_toast(page, f"Project #{job_num} Master Record Saved!", kind="success")
-            project_detail_modal_dialog.open = False
+            if project_detail_modal_dialog:
+                project_detail_modal_dialog.open = False
             page.update()
 
             if on_save_callback:
@@ -759,9 +763,9 @@ def build_ticket_detail_modal(
             width=760, height=580, padding=ft.padding.only(left=12, right=20, top=10, bottom=10)
         ),
         actions=[
-            ft.TextButton("Cancel", on_click=lambda _: [setattr(project_detail_modal_dialog, 'open', False), page.update()]),
+            ft.TextButton("Cancel", on_click=lambda _: [setattr(ticket_detail_modal_dialog, 'open', False), page.update()]),
             ft.ElevatedButton("Save Ticket Details", icon=ft.icons.SAVE, style=FieldFlowLightTheme.get_primary_button_style(), on_click=save_ticket_detail_edits)
         ]
     )
 
-    return ticket_detail_modal_dialog, populate_ticket_data
+    return project_detail_modal_dialog, populate_ticket_data
