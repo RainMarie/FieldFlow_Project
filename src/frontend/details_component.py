@@ -124,7 +124,7 @@ def build_project_detail_modal(
         if e.files:
             selected_file = e.files[0]
             staged_photo_path["value"] = selected_file.path if hasattr(selected_file, 'path') and selected_file.path else selected_file.name
-            photo_status_txt.value = f"📷 Photo Staged: {os.path.basename(staged_photo_path['value'])}"
+            photo_status_txt.value = f"Photo Staged: {os.path.basename(staged_photo_path['value'])}"
             photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
             page.update()
 
@@ -133,7 +133,7 @@ def build_project_detail_modal(
             staged_documents.clear()
             for f in e.files:
                 staged_documents.append(f.path if hasattr(f, 'path') and f.path else f.name)
-            docs_status_txt.value = f"📄 {len(staged_documents)} Document(s) Staged"
+            docs_status_txt.value = f"{len(staged_documents)} Document(s) Staged"
             docs_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
             page.update()
 
@@ -196,7 +196,7 @@ def build_project_detail_modal(
 
         staged_photo_path["value"] = photo_val
         if photo_val:
-            photo_status_txt.value = f"📷 Current Photo: {os.path.basename(photo_val)}"
+            photo_status_txt.value = f"Current Photo: {os.path.basename(photo_val)}"
             photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
         else:
             photo_status_txt.value = "No Custom Picture Selected"
@@ -257,26 +257,39 @@ def build_project_detail_modal(
             "photo_url": staged_photo_path["value"]
         }
 
+        # Step 1: Local SQLite Write (UPSERT + Table Mirror Sync)
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
+                # Upsert into projects table
                 cursor.execute("""
-                    UPDATE projects
-                    SET site_name = ?, tbco_account_number = ?, pm_contact_id = ?,
-                        project_name = ?, drive_id = ?, stage = ?
+                    INSERT OR REPLACE INTO projects (
+                        tbc_job_number, site_name, tbco_account_number, pm_contact_id,
+                        project_name, drive_id, stage
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (job_num, clean_site, clean_acct, clean_pm_id, proj_name, drive_id_val, stage_val))
+
+                # Also update matching intake_requests records so project cards update immediately
+                cursor.execute("""
+                    UPDATE intake_requests
+                    SET project_name = ?, contractor_company_name = ?, site_name = ?,
+                        street_address_1 = ?, street_address_2 = ?, city = ?, state = ?,
+                        postal_code = ?, country = ?
                     WHERE tbc_job_number = ?
-                """, (clean_site, clean_acct, clean_pm_id, proj_name, drive_id_val, stage_val, job_num))
+                """, (proj_name, company_name, clean_site, street_1, street_2, city_val, state_val, postal_val, country_val, job_num))
+
                 conn.commit()
         except Exception as sql_err:
             logging.error(f"SQLite project update error: {sql_err}")
 
+        # Step 2: Firestore Cloud Mirror Write
         if firestore_db is not None:
             try:
                 firestore_db.collection("projects").document(job_num).set(updated_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore project update error: {fs_err}")
 
-        show_toast(page, f"🎉 Project #{job_num} Master Record Saved!", kind="success")
+        show_toast(page, f"Project #{job_num} Master Record Saved!", kind="success")
         project_detail_modal_dialog.open = False
         page.update()
 
@@ -310,8 +323,8 @@ def build_project_detail_modal(
 
                 build_section_header("5. Project Media & Attachments", color_token=FieldFlowLightTheme.PRIMARY_GREEN),
                 ft.Row([
-                    ft.OutlinedButton("📷 Upload Photo", icon=ft.icons.IMAGE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: photo_picker.pick_files(allow_multiple=False)),
-                    ft.OutlinedButton("📄 Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True))
+                    ft.OutlinedButton("Upload Photo", icon=ft.icons.IMAGE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: photo_picker.pick_files(allow_multiple=False)),
+                    ft.OutlinedButton("Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True))
                 ], spacing=10),
                 ft.Row([photo_status_txt]),
                 ft.Row([docs_status_txt])
