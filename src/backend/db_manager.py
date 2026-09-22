@@ -1,7 +1,7 @@
 """
 src/backend/db_manager.py
-Database Manager providing Cloud-First Firebase Firestore synchronization,
-offline local SQLite mirroring, and cascading upserts for parent entities.
+Database Manager providing Local-First SQLite storage with asynchronous
+Cloud Firestore synchronization via sync_engine.
 """
 
 import os
@@ -28,6 +28,7 @@ try:
 except ImportError:
     raise ImportError("Dependency Missing: Please execute 'pip install cryptography'")
 
+from src.backend import sync_engine
 from src.backend.validators import is_valid_tbc_job_number, validate_inspection_metrics
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -220,7 +221,7 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # 9. INTAKE REQUESTS (NORMALIZED SCHEMA: SALES REP FK ONLY)
+            # 9. INTAKE REQUESTS
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS intake_requests (
                     request_id TEXT PRIMARY KEY,
@@ -368,7 +369,7 @@ class LocalDatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_parts_sku ON parts_master(sku);")
 
             conn.commit()
-        logging.info("🎉 Local SQLite Database Engine initialized across 16 relational tables.")
+        logging.info("Local SQLite Database Engine initialized across 16 relational tables.")
 
 
 cred_manager = WebSafeCredentialManager()
@@ -577,7 +578,7 @@ def resolve_pm_contact(
 
 
 def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
-    """Executes atomic service intake transaction using normalized intake_requests schema."""
+    """Saves intake requests locally to SQLite first, then triggers cloud sync in background."""
     req_id = form_data.get("request_id") or f"REQ-{uuid.uuid4().hex[:8].upper()}"
     job_no = form_data.get("tbc_job_number", "889900XX").strip().upper()
     submission_time = form_data.get("submission_timestamp") or datetime.now(timezone.utc).isoformat()
@@ -616,14 +617,7 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         "submission_timestamp": submission_time
     }
 
-    # Primary Cloud Write to Firestore 'intake_requests' collection
-    if db is not None:
-        try:
-            db.collection("intake_requests").document(req_id).set(standardized_payload, merge=True)
-        except Exception as err:
-            logging.warning(f"Cloud transaction note: {err}")
-
-    # Offline Local SQLite Mirror
+    # Step 1: Local-First Save to SQLite (guarantees offline availability)
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("BEGIN TRANSACTION;")
@@ -640,10 +634,15 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         """, tuple(standardized_payload.values()))
 
         conn.commit()
-        return req_id
+
+    # Step 2: Asynchronous Cloud Sync Trigger
+    sync_engine.sync_intake_in_background(db, standardized_payload)
+
+    return req_id
 
 
 def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_time: str, job_type: str) -> Dict[str, Any]:
+    """Creates a dispatch record locally first, then triggers cloud sync in background."""
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT sales_rep_email FROM intake_requests WHERE tbc_job_number = ? LIMIT 1", (tbc_job_number,))
@@ -651,20 +650,28 @@ def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_ti
         sales_rep = row["sales_rep_email"] if row and row["sales_rep_email"] else "sales1@tombarrow.com"
 
         job_id = f"JOB-{uuid.uuid4().hex[:8].upper()}"
+        
+        # Step 1: Local-First Write to SQLite
         cursor.execute("""
             INSERT INTO dispatches (job_id, tbc_job_number, technician_email, sales_rep_email, scheduled_time, status, job_type)
             VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
         """, (job_id, tbc_job_number, technician_email, sales_rep, scheduled_time, job_type))
         conn.commit()
 
-        return {
+        dispatch_payload = {
             "job_id": job_id,
             "tbc_job_number": tbc_job_number,
             "technician_email": technician_email,
             "sales_rep_email": sales_rep,
             "scheduled_time": scheduled_time,
+            "status": "Scheduled",
             "job_type": job_type
         }
+
+        # Step 2: Asynchronous Cloud Sync Trigger
+        sync_engine.dispatch_sync_in_background(db, dispatch_payload)
+
+        return dispatch_payload
 
 
 def save_asset_inspection(job_id: str, asset_id: str, registration_status: str, inspection_metrics: dict) -> str:

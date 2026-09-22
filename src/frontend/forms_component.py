@@ -591,7 +591,7 @@ def build_service_intake_form(
     on_success_callback=None,
     get_tech_options_fn=None
 ) -> ft.Control:
-    """Service Ticket Intake Form with search-first field ordering and Company PM integration."""
+    """Service Ticket Intake Form with search-first field ordering, Job # on-blur auto-fill, and Company PM integration."""
     
     # 1. Sales Rep Search Controls
     sales_instructions_note = ft.Text(
@@ -681,8 +681,49 @@ def build_service_intake_form(
     tf_pm_email = ft.TextField(label="Company Project Manager Email", hint_text="e.g. asmith@acme.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_pm_phone = ft.TextField(label="Company Project Manager Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 4. Job & Location Controls
-    tf_job_num = ft.TextField(label="TBCo Job #*", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
+    # 4. Job & Location Controls with Job # On-Blur Auto-Fill
+    def on_job_num_blur(e):
+        clean_job = tf_job_num.value.strip().upper() if tf_job_num.value else ""
+        if not clean_job:
+            return
+
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        p.tbc_job_number, p.project_name, p.site_name, p.tbco_account_number,
+                        c.company_name AS contractor_company_name,
+                        loc.street_address_1, loc.street_address_2, loc.city, loc.state, loc.postal_code, loc.country,
+                        cnt.first_name AS pm_first_name, cnt.last_name AS pm_last_name, cnt.email AS pm_email, cnt.phone AS pm_phone,
+                        ir.sales_rep_email, ir.sales_rep_phone, ir.team_code,
+                        u.first_name AS sales_rep_first_name, u.last_name AS sales_rep_last_name
+                    FROM projects p
+                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                    LEFT JOIN locations loc ON p.site_name = loc.site_name
+                    LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
+                    LEFT JOIN (
+                        SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
+                        FROM intake_requests
+                        GROUP BY tbc_job_number
+                    ) ir ON p.tbc_job_number = ir.tbc_job_number
+                    LEFT JOIN users u ON ir.sales_rep_email = u.user_email
+                    WHERE UPPER(p.tbc_job_number) = ?
+                    LIMIT 1
+                """, (clean_job,))
+                row = cursor.fetchone()
+                if row:
+                    populate_data(dict(row))
+                    show_toast(page, f"Loaded shared project details for Job #{clean_job}", kind="info")
+        except Exception as err:
+            logging.warning(f"Job num blur lookup error: {err}")
+
+    tf_job_num = ft.TextField(
+        label="TBCo Job #*", 
+        border_color=FieldFlowLightTheme.ACCENT_BLUE, 
+        expand=True,
+        on_blur=on_job_num_blur
+    )
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
@@ -742,24 +783,28 @@ def build_service_intake_form(
         if not isinstance(proj_data, dict):
             return
 
+        # Sales Rep Shared Fields
         sales_email_val = proj_data.get("sales_rep_email") or ""
         tf_sales_email.value = sales_email_val
-        tf_sales_first.value = proj_data.get("sales_rep_first_name") or ""
-        tf_sales_last.value = proj_data.get("sales_rep_last_name") or ""
-        tf_sales_phone.value = proj_data.get("sales_rep_phone") or ""
+        tf_sales_first.value = proj_data.get("sales_rep_first_name") or proj_data.get("first_name") or ""
+        tf_sales_last.value = proj_data.get("sales_rep_last_name") or proj_data.get("last_name") or ""
+        tf_sales_phone.value = proj_data.get("sales_rep_phone") or proj_data.get("user_phone") or ""
         dd_team_code.value = proj_data.get("team_code") or None
 
-        tf_job_num.value = proj_data.get("tbc_job_number", "")
-        tf_proj_name.value = proj_data.get("project_name", "")
-        tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("company_name", "")
+        # Contractor Shared Fields
+        tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("company_name") or ""
         tf_company_acct.value = proj_data.get("tbco_account_number") or ""
-        tf_site_name.value = proj_data.get("site_name", "")
 
+        # Project Manager Shared Fields
         tf_pm_first.value = proj_data.get("pm_first_name") or ""
         tf_pm_last.value = proj_data.get("pm_last_name") or ""
         tf_pm_email.value = proj_data.get("pm_email") or ""
         tf_pm_phone.value = proj_data.get("pm_phone") or ""
 
+        # Job & Location Shared Fields
+        tf_job_num.value = proj_data.get("tbc_job_number", "")
+        tf_site_name.value = proj_data.get("site_name", "")
+        tf_proj_name.value = proj_data.get("project_name", "")
         tf_street_1.value = proj_data.get("street_address_1", "")
         tf_street_2.value = proj_data.get("street_address_2", "")
         tf_city.value = proj_data.get("city", "")
@@ -767,6 +812,7 @@ def build_service_intake_form(
         tf_postal.value = proj_data.get("postal_code", "")
         tf_country.value = proj_data.get("country", "US")
 
+        # Project Site Contact Shared Fields
         tf_contact_first.value = proj_data.get("project_site_contact_first_name") or ""
         tf_contact_last.value = proj_data.get("project_site_contact_last_name") or ""
         tf_contact_email.value = proj_data.get("project_site_contact_email") or ""
