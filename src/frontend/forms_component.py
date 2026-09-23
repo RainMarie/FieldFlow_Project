@@ -686,7 +686,7 @@ def build_service_intake_form(
                     LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
                     LEFT JOIN (
                         SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
-                        FROM intake_requests
+                        FROM intake_ledger
                         GROUP BY tbc_job_number
                     ) ir ON p.tbc_job_number = ir.tbc_job_number
                     LEFT JOIN users u ON ir.sales_rep_email = u.user_email
@@ -758,43 +758,98 @@ def build_service_intake_form(
     if docs_picker not in page.overlay:
         page.overlay.append(docs_picker)
 
-    def populate_data(proj_data: dict):
+    def populate_data(proj_data):
+        """Safely prefill form fields from dictionary payload or job number string with DB fallback."""
         if get_tech_options_fn:
             dd_technician.options = get_tech_options_fn()
 
-        if not isinstance(proj_data, dict):
-            return
+        if isinstance(proj_data, str):
+            payload = {}
+            job_num = proj_data.strip().upper()
+        else:
+            payload = dict(proj_data or {})
+            job_num = str(payload.get("tbc_job_number") or payload.get("job_number") or "").strip().upper()
 
-        sales_email_val = proj_data.get("sales_rep_email") or ""
+        # Database Fallback Lookup if key details are missing from payload
+        if job_num:
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT 
+                            p.tbc_job_number, p.project_name, p.site_name, p.po_number, p.tbco_account_number,
+                            c.company_name AS contractor_company_name,
+                            loc.street_address_1, loc.street_address_2, loc.city, loc.state, loc.postal_code, loc.country,
+                            cnt.first_name AS pm_first_name, cnt.last_name AS pm_last_name, cnt.email AS pm_email, cnt.phone AS pm_phone,
+                            ir.sales_rep_email, ir.sales_rep_phone, ir.team_code,
+                            u.first_name AS sales_rep_first_name, u.last_name AS sales_rep_last_name
+                        FROM projects p
+                        LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                        LEFT JOIN locations loc ON p.site_name = loc.site_name
+                        LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
+                        LEFT JOIN (
+                            SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
+                            FROM intake_ledger
+                            GROUP BY tbc_job_number
+                        ) ir ON p.tbc_job_number = ir.tbc_job_number
+                        LEFT JOIN users u ON ir.sales_rep_email = u.user_email
+                        WHERE UPPER(p.tbc_job_number) = ?
+                        LIMIT 1
+                    """, (job_num,))
+                    row = cursor.fetchone()
+                    if row:
+                        db_dict = dict(row)
+                        for k, v in db_dict.items():
+                            if k not in payload or not payload[k]:
+                                payload[k] = v
+            except Exception as err:
+                logging.warning(f"Local prefill lookup note: {err}")
+
+        # Resolve Sales User Details from 'users' table
+        sales_email_val = str(payload.get("sales_rep_email") or "").strip().lower()
+        if sales_email_val and not payload.get("sales_rep_first_name"):
+            try:
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT first_name, last_name, user_phone FROM users WHERE LOWER(user_email) = ?", (sales_email_val,))
+                    u_row = cursor.fetchone()
+                    if u_row:
+                        payload["sales_rep_first_name"] = u_row["first_name"] or ""
+                        payload["sales_rep_last_name"] = u_row["last_name"] or ""
+                        payload["sales_rep_phone"] = u_row["user_phone"] or ""
+            except Exception as err:
+                logging.warning(f"Sales user resolution note: {err}")
+
+        # Populate Input Controls Safely
         tf_sales_email.value = sales_email_val
-        tf_sales_first.value = proj_data.get("sales_rep_first_name") or proj_data.get("first_name") or ""
-        tf_sales_last.value = proj_data.get("sales_rep_last_name") or proj_data.get("last_name") or ""
-        tf_sales_phone.value = proj_data.get("sales_rep_phone") or proj_data.get("user_phone") or ""
-        dd_team_code.value = proj_data.get("team_code") or None
+        tf_sales_first.value = payload.get("sales_rep_first_name") or payload.get("first_name") or ""
+        tf_sales_last.value = payload.get("sales_rep_last_name") or payload.get("last_name") or ""
+        tf_sales_phone.value = payload.get("sales_rep_phone") or payload.get("user_phone") or ""
+        dd_team_code.value = payload.get("team_code") or None
 
-        tf_company.value = proj_data.get("contractor_company_name") or proj_data.get("company_name") or ""
-        tf_company_acct.value = proj_data.get("tbco_account_number") or ""
+        tf_company.value = payload.get("contractor_company_name") or payload.get("company_name") or ""
+        tf_company_acct.value = payload.get("tbco_account_number") or ""
 
-        tf_pm_first.value = proj_data.get("pm_first_name") or ""
-        tf_pm_last.value = proj_data.get("pm_last_name") or ""
-        tf_pm_email.value = proj_data.get("pm_email") or ""
-        tf_pm_phone.value = proj_data.get("pm_phone") or ""
+        tf_pm_first.value = payload.get("pm_first_name") or payload.get("project_site_contact_first_name") or ""
+        tf_pm_last.value = payload.get("pm_last_name") or payload.get("project_site_contact_last_name") or ""
+        tf_pm_email.value = payload.get("pm_email") or payload.get("project_site_contact_email") or ""
+        tf_pm_phone.value = payload.get("pm_phone") or payload.get("project_site_contact_phone") or ""
 
-        tf_job_num.value = proj_data.get("tbc_job_number", "")
-        tf_site_name.value = proj_data.get("site_name", "")
-        tf_proj_name.value = proj_data.get("project_name", "")
-        tf_po_num.value = proj_data.get("po_number", "")
+        tf_job_num.value = job_num or payload.get("tbc_job_number", "")
+        tf_site_name.value = payload.get("site_name", "")
+        tf_proj_name.value = payload.get("project_name", "")
+        tf_po_num.value = payload.get("po_number", "")
 
-        tf_street_1.value = proj_data.get("street_address_1", "")
-        tf_street_2.value = proj_data.get("street_address_2", "")
-        tf_city.value = proj_data.get("city", "")
-        tf_state.value = proj_data.get("state", "")
-        tf_postal.value = proj_data.get("postal_code", "")
+        tf_street_1.value = payload.get("street_address_1", "")
+        tf_street_2.value = payload.get("street_address_2", "")
+        tf_city.value = payload.get("city", "")
+        tf_state.value = payload.get("state", "")
+        tf_postal.value = payload.get("postal_code", "")
 
-        tf_contact_first.value = proj_data.get("project_site_contact_first_name") or ""
-        tf_contact_last.value = proj_data.get("project_site_contact_last_name") or ""
-        tf_contact_email.value = proj_data.get("project_site_contact_email") or ""
-        tf_contact_phone.value = proj_data.get("project_site_contact_phone") or ""
+        tf_contact_first.value = payload.get("project_site_contact_first_name") or payload.get("pm_first_name") or ""
+        tf_contact_last.value = payload.get("project_site_contact_last_name") or payload.get("pm_last_name") or ""
+        tf_contact_email.value = payload.get("project_site_contact_email") or payload.get("pm_email") or ""
+        tf_contact_phone.value = payload.get("project_site_contact_phone") or payload.get("pm_phone") or ""
 
         if page:
             page.update()
@@ -880,7 +935,7 @@ def build_service_intake_form(
 
         clean_site = resolve_location(site_name, tf_street_1.value.strip(), tf_street_2.value.strip() if tf_street_2.value else "", tf_city.value.strip(), tf_state.value.strip(), tf_postal.value.strip() if tf_postal.value else "", country="US")
 
-        # Step 1: DUAL ACTION - Check if Project Space Exists in Local SQLite
+        # Step 1: Check if Project Space Exists in Local SQLite
         drive_id = None
         try:
             with local_db.get_connection() as conn:
@@ -927,7 +982,7 @@ def build_service_intake_form(
         except Exception as p_err:
             logging.error(f"Project space check/create error: {p_err}")
 
-        # Step 2: Save Service Request Ticket
+        # Step 2: Save Service Request Ticket to INTAKE_LEDGER
         req_id = f"REQ-{int(time.time())}"
         triage_val = "Dispatched" if (dd_technician.value and dd_technician.value.strip()) else "Unassigned"
         
@@ -968,7 +1023,7 @@ def build_service_intake_form(
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO intake_requests (
+                    INSERT INTO intake_ledger (
                         request_id, tbc_job_number, team_code, site_name, project_name,
                         contractor_company_name, street_address_1, street_address_2, city, state,
                         postal_code, country, sales_rep_email, sales_rep_phone,
@@ -1022,7 +1077,7 @@ def build_service_intake_form(
 
         if firestore_db is not None:
             try:
-                firestore_db.collection("intake_requests").document(req_id).set(intake_payload, merge=True)
+                firestore_db.collection("intake_ledger").document(req_id).set(intake_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore intake sync error: {fs_err}")
 

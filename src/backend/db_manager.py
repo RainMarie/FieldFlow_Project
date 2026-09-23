@@ -228,9 +228,9 @@ class LocalDatabaseManager:
             if "po_number" not in existing_cols:
                 cursor.execute("ALTER TABLE projects ADD COLUMN po_number TEXT;")
 
-            # 9. INTAKE REQUESTS
+            # 9. INTAKE LEDGER (Updated to align 1-to-1 with Master Schema Matrix)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS intake_requests (
+                CREATE TABLE IF NOT EXISTS intake_ledger (
                     request_id TEXT PRIMARY KEY,
                     tbc_job_number TEXT,
                     team_code TEXT,
@@ -629,7 +629,7 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
         cursor.execute("BEGIN TRANSACTION;")
 
         cursor.execute("""
-            INSERT OR REPLACE INTO intake_requests (
+            INSERT OR REPLACE INTO intake_ledger (
                 request_id, tbc_job_number, team_code, site_name, project_name,
                 contractor_company_name, street_address_1, street_address_2, city, state,
                 postal_code, country, sales_rep_email, sales_rep_phone,
@@ -649,7 +649,7 @@ def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_ti
     """Creates a dispatch record locally first, then triggers cloud sync in background."""
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT sales_rep_email FROM intake_requests WHERE tbc_job_number = ? LIMIT 1", (tbc_job_number,))
+        cursor.execute("SELECT sales_rep_email FROM intake_ledger WHERE tbc_job_number = ? LIMIT 1", (tbc_job_number,))
         row = cursor.fetchone()
         sales_rep = row["sales_rep_email"] if row and row["sales_rep_email"] else "sales1@tombarrow.com"
 

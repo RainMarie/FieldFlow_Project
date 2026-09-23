@@ -169,7 +169,7 @@ def main(page: ft.Page):
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT i.*, u.first_name AS sales_first_name, u.last_name AS sales_last_name
-                    FROM intake_requests i
+                    FROM intake_ledger i
                     LEFT JOIN users u ON i.sales_rep_email = u.user_email
                     WHERE i.triage_status IN ('Unassigned', 'PENDING_TRIAGE', 'Pending')
                     ORDER BY i.submission_timestamp DESC
@@ -183,7 +183,7 @@ def main(page: ft.Page):
 
         if not pending_records and db is not None:
             try:
-                query = db.collection("intake_requests").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
+                query = db.collection("intake_ledger").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
                 for doc in query:
                     record = doc.to_dict()
                     record["request_id"] = doc.id
@@ -323,10 +323,10 @@ def main(page: ft.Page):
         if db is not None:
             try:
                 if req_id:
-                    doc = db.collection("intake_requests").document(req_id).get()
+                    doc = db.collection("intake_ledger").document(req_id).get()
                     if doc.exists: row = doc.to_dict()
                 if not row and job_num:
-                    query = db.collection("intake_requests").where("tbc_job_number", "==", job_num).limit(1).stream()
+                    query = db.collection("intake_ledger").where("tbc_job_number", "==", job_num).limit(1).stream()
                     for d in query: row = d.to_dict()
             except Exception as err:
                 print(f"Error loading ticket record: {err}")
@@ -377,7 +377,7 @@ def main(page: ft.Page):
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    UPDATE intake_requests
+                    UPDATE intake_ledger
                     SET triage_status = 'Dispatched', tbc_job_number = ?
                     WHERE request_id = ?
                 """, (job_num, req_id))
@@ -388,7 +388,7 @@ def main(page: ft.Page):
                 """, (job_id, job_num, selected_tech, scheduled_date, job_type))
 
                 # Query full intake details to construct rich Google Calendar payload
-                cursor.execute("SELECT * FROM intake_requests WHERE request_id = ?", (req_id,))
+                cursor.execute("SELECT * FROM intake_ledger WHERE request_id = ?", (req_id,))
                 full_row = cursor.fetchone()
                 full_dict = dict(full_row) if full_row else req_data
 
@@ -396,7 +396,7 @@ def main(page: ft.Page):
 
             # 2. Update Cloud Firestore Storage
             if db is not None:
-                db.collection("intake_requests").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
+                db.collection("intake_ledger").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
 
             # 3. Publish Rich Ticket Payload to Google Calendar
             try:
@@ -570,7 +570,7 @@ def main(page: ft.Page):
                     LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
                     LEFT JOIN (
                         SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
-                        FROM intake_requests
+                        FROM intake_ledger
                         GROUP BY tbc_job_number
                     ) ir ON p.tbc_job_number = ir.tbc_job_number
                 """)

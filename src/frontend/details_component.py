@@ -232,7 +232,7 @@ def build_project_detail_modal(
 
                     cursor.execute("""
                         SELECT request_id, request_type, triage_status, issue_description, submission_timestamp
-                        FROM intake_requests
+                        FROM intake_ledger
                         WHERE tbc_job_number = ?
                         ORDER BY submission_timestamp DESC
                     """, (job_num,))
@@ -262,7 +262,7 @@ def build_project_detail_modal(
         cloud_dispatches = []
         if job_num and firestore_db is not None:
             try:
-                fs_reqs = firestore_db.collection("intake_requests").where("tbc_job_number", "==", job_num).stream()
+                fs_reqs = firestore_db.collection("intake_ledger").where("tbc_job_number", "==", job_num).stream()
                 for doc in fs_reqs:
                     d = doc.to_dict()
                     d["request_id"] = doc.id
@@ -425,7 +425,7 @@ def build_project_detail_modal(
             "photo_url": final_photo_url
         }
 
-        # Step B: Local SQLite Persistence ("Sequel")
+        # Step B: Local SQLite Persistence
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -472,9 +472,9 @@ def build_project_detail_modal(
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (job_num, site_name, company_acct, pm_contact_id, proj_name, drive_id_val, stage_val, final_photo_url))
 
-                # 5. Sync all matching records in INTAKE_REQUESTS table
+                # 5. Sync all matching records in INTAKE_LEDGER table
                 cursor.execute("""
-                    UPDATE intake_requests
+                    UPDATE intake_ledger
                     SET project_name = ?, contractor_company_name = ?, site_name = ?,
                         street_address_1 = ?, street_address_2 = ?, city = ?, state = ?,
                         postal_code = ?, country = ?, project_site_contact_first_name = ?,
@@ -488,7 +488,7 @@ def build_project_detail_modal(
 
                 conn.commit()
 
-            # Step C: Cloud Firestore Mirror Write ("Fire Store")
+            # Step C: Cloud Firestore Mirror Write
             if firestore_db is not None:
                 try:
                     firestore_db.collection("projects").document(job_num).set(updated_payload, merge=True)
@@ -727,7 +727,7 @@ def build_ticket_detail_modal(
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    UPDATE intake_requests
+                    UPDATE intake_ledger
                     SET tbc_job_number = ?, team_code = ?, site_name = ?, project_name = ?,
                         contractor_company_name = ?, street_address_1 = ?, street_address_2 = ?,
                         city = ?, state = ?, postal_code = ?, country = ?, sales_rep_email = ?,
@@ -751,7 +751,7 @@ def build_ticket_detail_modal(
 
         if firestore_db is not None:
             try:
-                firestore_db.collection("intake_requests").document(req_id).set(updated_payload, merge=True)
+                firestore_db.collection("intake_ledger").document(req_id).set(updated_payload, merge=True)
             except Exception as fs_err:
                 logging.error(f"Firestore update error: {fs_err}")
 
