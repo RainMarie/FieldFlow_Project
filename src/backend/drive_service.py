@@ -133,7 +133,7 @@ def create_project_drive_folder(job_number: str, project_name: str) -> Dict[str,
 def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[Dict[str, Any]]:
     """
     Uploads local files into the specified Google Drive folder, applies public view permissions,
-    and returns detailed file metadata including direct streamable thumbnail URLs.
+    and returns detailed file metadata including direct streamable thumbnail URLs[cite: 3].
     """
     service = get_drive_service()
     uploaded_files = []
@@ -158,7 +158,7 @@ def upload_files_to_drive_folder(folder_id: str, file_paths: List[str]) -> List[
                 file_id = uploaded_file.get('id')
                 web_link = uploaded_file.get('webViewLink')
 
-                # Grant public reader permission so Flet can stream direct thumbnail images
+                # Grant public reader permission so Flet controls can stream direct thumbnail images
                 try:
                     file_permission = {'type': 'anyone', 'role': 'reader'}
                     service.permissions().create(
@@ -193,7 +193,7 @@ def send_receipt_email_with_drive_link(
     project_name: str,
     drive_url: str
 ) -> bool:
-    """Sends a confirmation email containing the Drive folder link."""
+    """Sends a confirmation email containing the Drive folder link[cite: 3]."""
     if not requestor_email or "@" not in requestor_email:
         logging.warning("Invalid requestor email. Skipping email dispatch.")
         return False
@@ -249,7 +249,7 @@ def process_new_service_request_submittal(
     requestor_email: str,
     attached_file_paths: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Master pipeline wrapper: creates folder, uploads files, and emails receipt."""
+    """Master pipeline wrapper: creates folder, uploads files, and emails receipt[cite: 3]."""
     drive_info = create_project_drive_folder(job_number, project_name)
     drive_id = drive_info["drive_id"]
     drive_url = drive_info["drive_url"]
@@ -278,7 +278,7 @@ def ensure_project_drive_folder(
     requestor_email: str = "",
     attached_file_paths: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Check-and-Reuse Drive folder pipeline with structured upload photo URL returning."""
+    """Check-and-Reuse Drive folder pipeline with structured upload photo URL returning[cite: 3]."""
     clean_job_num = job_number.strip().upper()
     existing_drive_id = None
 
@@ -349,7 +349,7 @@ def ensure_project_drive_folder(
 
 
 def list_files_in_drive_folder(folder_id: str) -> List[Dict[str, str]]:
-    """Lists active files in a specified Google Drive folder."""
+    """Lists active files in a specified Google Drive folder[cite: 3]."""
     service = get_drive_service()
     if not service or not folder_id or folder_id.startswith("FLD-"):
         logging.warning(f"Drive service or folder ID '{folder_id}' invalid. Skipping.")

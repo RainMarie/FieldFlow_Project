@@ -200,20 +200,21 @@ def build_project_card(
     Directly consumes canonical keys for Contractor, Company PM, and Sales Rep.
     """
     if isinstance(project_data, dict):
-        job_num = project_data.get("tbc_job_number", "123456XX")
-        name = project_data.get("project_name", "Service Project")
-        st1 = project_data.get("street_address_1", "")
-        st2 = project_data.get("street_address_2", "")
-        c_city = project_data.get("city", "")
-        c_state = project_data.get("state", "")
-        c_zip = project_data.get("postal_code", "")
-        c_country = project_data.get("country", "US")
+        job_num = project_data.get("tbc_job_number") or project_data.get("job_number") or "123456XX"
+        name = project_data.get("project_name") or project_data.get("name") or "Service Project"
+        st1 = project_data.get("street_address_1") or project_data.get("address") or ""
+        st2 = project_data.get("street_address_2") or ""
+        c_city = project_data.get("city") or ""
+        c_state = project_data.get("state") or ""
+        c_zip = project_data.get("postal_code") or project_data.get("zip") or ""
+        c_country = project_data.get("country") or "US"
 
         address = f"{st1}, {c_city}, {c_state}".strip(", ") if st1 else project_data.get("site_name", "Pending Address")
 
-        client = project_data.get("contractor_company_name") or project_data.get("contractor_name") or project_data.get("company_name", "Partner")
-        acct_no = project_data.get("tbco_account_number", "N/A")
-        site_name = project_data.get("site_name", name)
+        client = project_data.get("contractor_company_name") or project_data.get("company_name") or project_data.get("contractor_name") or "Partner"
+        acct_no = project_data.get("tbco_account_number") or project_data.get("account_number") or "N/A"
+        site_name = project_data.get("site_name") or name
+        stage_val = project_data.get("stage") or "In Progress"
         
         raw_drive_id = project_data.get("drive_id")
         if not raw_drive_id or str(raw_drive_id).strip() in ["", "None", "FLD-0", "FLD-DRIVE-123456XX"]:
@@ -223,10 +224,10 @@ def build_project_card(
 
         photo_url = project_data.get("photo_url", "")
 
-        pm_f = project_data.get("pm_first_name") or project_data.get("project_site_contact_first_name", "")
-        pm_l = project_data.get("pm_last_name") or project_data.get("project_site_contact_last_name", "")
-        pm_em = project_data.get("pm_email") or project_data.get("project_site_contact_email", "")
-        pm_ph = project_data.get("pm_phone") or project_data.get("project_site_contact_phone", "")
+        pm_f = project_data.get("pm_first_name") or project_data.get("project_site_contact_first_name") or project_data.get("first_name") or ""
+        pm_l = project_data.get("pm_last_name") or project_data.get("project_site_contact_last_name") or project_data.get("last_name") or ""
+        pm_em = project_data.get("pm_email") or project_data.get("project_site_contact_email") or project_data.get("email") or ""
+        pm_ph = project_data.get("pm_phone") or project_data.get("project_site_contact_phone") or project_data.get("phone") or ""
 
         sales_em = project_data.get("sales_rep_email", "")
         sales_ph = project_data.get("sales_rep_phone", "")
@@ -235,19 +236,25 @@ def build_project_card(
         job_num, name, address, client, acct_no, drive_id, photo_url = "123456XX", "Project", "Pending Address", "Partner", "N/A", "FLD-GDRV-123456XX", ""
         st1, st2, c_city, c_state, c_zip, c_country = "", "", "", "", "", "US"
         site_name = name
+        stage_val = "In Progress"
         pm_f, pm_l, pm_em, pm_ph = "", "", "", ""
         sales_em, sales_ph, team_code = "", "", ""
 
     pm_full_name = f"{pm_f} {pm_l}".strip() or "Unassigned PM"
 
-    # Merge full project dictionary + all primary keys & site contact key aliases
+    # Fully normalized payload mapping all canonical field names and key aliases
     prefill_payload = {
         **(project_data if isinstance(project_data, dict) else {}),
         "tbc_job_number": job_num,
+        "job_number": job_num,
         "project_name": name,
         "contractor_company_name": client,
+        "company_name": client,
+        "contractor_name": client,
         "tbco_account_number": acct_no,
+        "account_number": acct_no,
         "site_name": site_name,
+        "stage": stage_val,
         "street_address_1": st1,
         "street_address_2": st2,
         "city": c_city,
@@ -258,6 +265,10 @@ def build_project_card(
         "pm_last_name": pm_l,
         "pm_email": pm_em,
         "pm_phone": pm_ph,
+        "first_name": pm_f,
+        "last_name": pm_l,
+        "email": pm_em,
+        "phone": pm_ph,
         "project_site_contact_first_name": pm_f,
         "project_site_contact_last_name": pm_l,
         "project_site_contact_email": pm_em,
@@ -279,7 +290,7 @@ def build_project_card(
 
     def handle_edit_click(e):
         if on_edit_action:
-            on_edit_action(project_data)
+            on_edit_action(prefill_payload)
 
     if is_grid_mode:
         img_control = build_project_image_control(photo_url, height=120)
@@ -569,7 +580,7 @@ def build_standard_ticket_card(
 
 
 # =========================================================================
-# 4. SITE ASSET, VISIT HISTORY, & USER CARD BUILDER
+# 4. SITE ASSET, VISIT HISTORY, & USER CARD BUILDERS
 # =========================================================================
 
 def build_site_asset_card(asset_data: dict, is_serviced: bool = False, on_click_action=None) -> ft.Container:

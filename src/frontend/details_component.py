@@ -376,7 +376,7 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
-        # Collect all staged files (Cover photo + multi-file documents)
+        # Collect all staged local files
         files_to_upload = []
         raw_photo_path = staged_photo_path["value"]
         if raw_photo_path and os.path.exists(raw_photo_path) and os.path.isfile(raw_photo_path):
@@ -386,7 +386,7 @@ def build_project_detail_modal(
             if doc_p and os.path.exists(doc_p) and os.path.isfile(doc_p) and doc_p not in files_to_upload:
                 files_to_upload.append(doc_p)
 
-        # Perform Google Drive upload and extract direct thumbnail URL
+        # Step A: Perform Google Drive Upload & Extract Direct Thumbnail Link
         final_photo_url = raw_photo_path
         if files_to_upload:
             try:
@@ -425,30 +425,31 @@ def build_project_detail_modal(
             "photo_url": final_photo_url
         }
 
+        # Step B: Local SQLite Persistence ("Sequel")
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # Dynamic Schema Migration Check for photo_url
+                # Dynamic Schema Migration Check for photo_url column
                 cursor.execute("PRAGMA table_info(projects);")
                 proj_cols = [row[1] for row in cursor.fetchall()]
                 if "photo_url" not in proj_cols:
                     cursor.execute("ALTER TABLE projects ADD COLUMN photo_url TEXT;")
 
-                # Step 1: Upsert into LOCATIONS table
+                # 1. Upsert into LOCATIONS table
                 cursor.execute("""
                     INSERT OR REPLACE INTO locations (
                         site_name, street_address_1, street_address_2, city, state, postal_code, country
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (site_name, street_1, street_2, city_val, state_val, postal_val, country_val))
 
-                # Step 2: Upsert into CONTRACTORS table
+                # 2. Upsert into CONTRACTORS table
                 cursor.execute("""
                     INSERT OR REPLACE INTO contractors (tbco_account_number, company_name)
                     VALUES (?, ?)
                 """, (company_acct, company_name))
 
-                # Step 3: Upsert into CONTACTS table (if PM contact details provided)
+                # 3. Upsert into CONTACTS table
                 pm_contact_id = None
                 if pm_email:
                     cursor.execute("SELECT contact_id FROM contacts WHERE LOWER(email) = ?", (pm_email,))
@@ -463,7 +464,7 @@ def build_project_detail_modal(
 
                 updated_payload["pm_contact_id"] = pm_contact_id
 
-                # Step 4: Upsert into PROJECTS master table (including photo_url)
+                # 4. Upsert into PROJECTS master table (storing final_photo_url)
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
                         tbc_job_number, site_name, tbco_account_number, pm_contact_id,
@@ -471,7 +472,7 @@ def build_project_detail_modal(
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (job_num, site_name, company_acct, pm_contact_id, proj_name, drive_id_val, stage_val, final_photo_url))
 
-                # Step 5: Sync all matching records in INTAKE_REQUESTS table
+                # 5. Sync all matching records in INTAKE_REQUESTS table
                 cursor.execute("""
                     UPDATE intake_requests
                     SET project_name = ?, contractor_company_name = ?, site_name = ?,
@@ -487,7 +488,7 @@ def build_project_detail_modal(
 
                 conn.commit()
 
-            # Step 6: Firestore Cloud Mirror Write
+            # Step C: Cloud Firestore Mirror Write ("Fire Store")
             if firestore_db is not None:
                 try:
                     firestore_db.collection("projects").document(job_num).set(updated_payload, merge=True)
