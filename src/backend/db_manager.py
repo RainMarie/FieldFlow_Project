@@ -205,7 +205,7 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # 8. PROJECTS (UPDATED: Added po_number column)
+            # 8. PROJECTS
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     tbc_job_number TEXT PRIMARY KEY,
@@ -676,8 +676,21 @@ def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_ti
 
 
 def save_asset_inspection(job_id: str, asset_id: str, registration_status: str, inspection_metrics: dict) -> str:
+    """Saves asset inspection report to Cloud Firestore and local SQLite storage."""
     report_id = f"RPT-{uuid.uuid4().hex[:8].upper()}"
     metrics_json = json.dumps(inspection_metrics)
+
+    if db is not None:
+        try:
+            db.collection("asset_inspections").document(report_id).set({
+                "report_id": report_id,
+                "job_id": job_id,
+                "asset_id": asset_id,
+                "registration_status": registration_status,
+                "inspection_metrics": inspection_metrics
+            }, merge=True)
+        except Exception as err:
+            logging.warning(f"Cloud asset inspection sync note: {err}")
     
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
@@ -699,10 +712,26 @@ def record_job_part_used(
     manual_cost: float = 0.0,
     cost_status: str = "Pending"
 ) -> str:
+    """Saves parts usage entries to Cloud Firestore and local SQLite storage."""
     usage_id = f"USE-{uuid.uuid4().hex[:8].upper()}"
     is_unlisted_flag = 1 if is_unlisted else 0
     actual_sku = None if is_unlisted else sku
-    
+
+    if db is not None:
+        try:
+            db.collection("job_parts_used").document(usage_id).set({
+                "usage_id": usage_id,
+                "job_id": job_id,
+                "sku": actual_sku,
+                "qty_used": qty_used,
+                "is_unlisted": is_unlisted,
+                "unlisted_description": unlisted_description,
+                "manual_cost": manual_cost,
+                "cost_status": cost_status
+            }, merge=True)
+        except Exception as err:
+            logging.warning(f"Cloud part usage sync note: {err}")
+
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -721,9 +750,24 @@ def log_system_event(
     old_value: Optional[str] = None,
     new_value: Optional[str] = None
 ) -> str:
+    """Saves audit trail events to Cloud Firestore and local SQLite storage."""
     log_id = f"LOG-{uuid.uuid4().hex[:8].upper()}"
     timestamp = datetime.now(timezone.utc).isoformat()
-    
+
+    if db is not None:
+        try:
+            db.collection("audit_log").document(log_id).set({
+                "log_id": log_id,
+                "user_email": user_email,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "timestamp": timestamp,
+                "old_value": old_value,
+                "new_value": new_value
+            }, merge=True)
+        except Exception as err:
+            logging.warning(f"Cloud audit log sync note: {err}")
+
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
