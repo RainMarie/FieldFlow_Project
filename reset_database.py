@@ -1,8 +1,8 @@
 """
 reset_database.py
 Single-use setup script to completely wipe local SQLite (tbc_local.db)
-and dynamically delete ALL Cloud Firestore collections (including manufacturer_portals).
-Leaves Cloud Firestore empty and ready for your seed script.
+and dynamically delete ALL Cloud Firestore collections.
+Leaves both storage layers clean and ready for master seeding.
 """
 
 import os
@@ -16,7 +16,6 @@ if CURRENT_DIR not in sys.path:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Import authenticated database instances from db_manager
 try:
     from src.backend.db_manager import db, local_db
 except ImportError as err:
@@ -54,16 +53,15 @@ def wipe_and_rebuild_sqlite():
 def purge_all_firestore_collections():
     """Dynamically discovers and deletes ALL documents across ALL Cloud Firestore collections."""
     if db is None:
-        logging.error("Firestore client is not connected. Please check db_manager configuration.")
+        logging.warning("Firestore client is not connected. Skipping cloud purge.")
         return
 
     logging.info("Discovering all active Cloud Firestore collections dynamically...")
     try:
-        # Dynamically fetch every collection in the Cloud Firestore database
         collections = list(db.collections())
 
         if not collections:
-            logging.info("No collections found in Cloud Firestore. Database is already clean!")
+            logging.info("No collections found in Cloud Firestore. Database is clean!")
             return
 
         for col in collections:
@@ -77,14 +75,14 @@ def purge_all_firestore_collections():
 
             logging.info(f"Successfully deleted {deleted_count} document(s) from '{col.id}'.")
 
-        logging.info("🎉 Cloud Firestore completely purged! 0 collections remaining.")
+        logging.info("🎉 Cloud Firestore completely purged!")
     except Exception as err:
         logging.error(f"Error purging Cloud Firestore collections: {err}")
 
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("STARTING DYNAMIC FULL DATABASE RESET")
+    print("STARTING FULL DATABASE RESET (SQLITE & FIRESTORE)")
     print("=" * 60 + "\n")
 
     wipe_and_rebuild_sqlite()

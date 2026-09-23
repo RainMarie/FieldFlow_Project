@@ -23,7 +23,9 @@ from src.frontend.theme import FieldFlowLightTheme
 from src.backend.db_manager import (
     local_db, 
     db as firestore_db,
-    resolve_sales_user
+    resolve_sales_user,
+    resolve_location,
+    resolve_contractor
 )
 from src.frontend.cards_component import (
     build_site_asset_card,
@@ -376,6 +378,10 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
+        # 1. Cloud-Synced Resolution for Locations and Contractors
+        clean_site = resolve_location(site_name, street_1, street_2, city_val, state_val, postal_val, country_val)
+        clean_acct = resolve_contractor(company_acct, company_name)
+
         # Collect all staged local files
         files_to_upload = []
         raw_photo_path = staged_photo_path["value"]
@@ -405,8 +411,8 @@ def build_project_detail_modal(
 
         updated_payload = {
             "tbc_job_number": job_num,
-            "site_name": site_name,
-            "tbco_account_number": company_acct,
+            "site_name": clean_site,
+            "tbco_account_number": clean_acct,
             "project_name": proj_name,
             "contractor_company_name": company_name,
             "street_address_1": street_1,
@@ -435,20 +441,7 @@ def build_project_detail_modal(
                 if "photo_url" not in proj_cols:
                     cursor.execute("ALTER TABLE projects ADD COLUMN photo_url TEXT;")
 
-                # 1. Upsert into LOCATIONS table
-                cursor.execute("""
-                    INSERT OR REPLACE INTO locations (
-                        site_name, street_address_1, street_address_2, city, state, postal_code, country
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (site_name, street_1, street_2, city_val, state_val, postal_val, country_val))
-
-                # 2. Upsert into CONTRACTORS table
-                cursor.execute("""
-                    INSERT OR REPLACE INTO contractors (tbco_account_number, company_name)
-                    VALUES (?, ?)
-                """, (company_acct, company_name))
-
-                # 3. Upsert into CONTACTS table
+                # Upsert into CONTACTS table
                 pm_contact_id = None
                 if pm_email:
                     cursor.execute("SELECT contact_id FROM contacts WHERE LOWER(email) = ?", (pm_email,))
@@ -459,11 +452,11 @@ def build_project_detail_modal(
                         INSERT OR REPLACE INTO contacts (
                             contact_id, tbco_account_number, first_name, last_name, title, phone, email
                         ) VALUES (?, ?, ?, ?, 'Project Manager', ?, ?)
-                    """, (pm_contact_id, company_acct, pm_first, pm_last, pm_phone, pm_email))
+                    """, (pm_contact_id, clean_acct, pm_first, pm_last, pm_phone, pm_email))
 
                 updated_payload["pm_contact_id"] = pm_contact_id
 
-                # 4. Upsert into PROJECTS master table directly holding all flat fields
+                # Upsert into PROJECTS master table directly holding all flat fields
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
                         tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name,
@@ -472,13 +465,13 @@ def build_project_detail_modal(
                         drive_id, stage, photo_url
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    job_num, site_name, company_acct, pm_contact_id, proj_name,
+                    job_num, clean_site, clean_acct, pm_contact_id, proj_name,
                     company_name, street_1, street_2, city_val, state_val,
                     postal_val, country_val, pm_first, pm_last, pm_email, pm_phone,
                     drive_id_val, stage_val, final_photo_url
                 ))
 
-                # 5. Sync all matching records in INTAKE_LEDGER table
+                # Sync all matching records in INTAKE_LEDGER table
                 cursor.execute("""
                     UPDATE intake_ledger
                     SET project_name = ?, contractor_company_name = ?, site_name = ?,
@@ -488,7 +481,7 @@ def build_project_detail_modal(
                         project_site_contact_phone = ?
                     WHERE tbc_job_number = ?
                 """, (
-                    proj_name, company_name, site_name, street_1, street_2, city_val, state_val,
+                    proj_name, company_name, clean_site, street_1, street_2, city_val, state_val,
                     postal_val, country_val, pm_first, pm_last, pm_email, pm_phone, job_num
                 ))
 

@@ -25,6 +25,7 @@ from src.backend.lifecycle_rules import validate_user_role_permission, validate_
 from src.backend.search_engine import search_admin_portal
 from src.frontend.theme import FieldFlowLightTheme
 from src.backend.db_manager import db, local_db
+from src.backend import sync_engine
 from src.backend.calendar_listener import GoogleCalendarListener
 from src.backend.drive_service import (
     process_new_service_request_submittal,
@@ -388,16 +389,29 @@ def main(page: ft.Page):
                     VALUES (?, ?, ?, ?, 'Scheduled', ?)
                 """, (job_id, job_num, selected_tech, scheduled_date, job_type))
 
-                # Query full intake details to construct rich Google Calendar payload
+                # Query full intake details to construct rich Google Calendar & Cloud Sync payload
                 cursor.execute("SELECT * FROM intake_ledger WHERE request_id = ?", (req_id,))
                 full_row = cursor.fetchone()
                 full_dict = dict(full_row) if full_row else req_data
 
                 conn.commit()
 
-            # 2. Update Cloud Firestore Storage
+            # 2. Update Cloud Firestore Storage for Intake Ledger & Dispatch
             if db is not None:
                 db.collection("intake_ledger").document(req_id).set({"triage_status": "Dispatched"}, merge=True)
+
+            dispatch_payload = {
+                "job_id": job_id,
+                "tbc_job_number": job_num,
+                "technician_email": selected_tech,
+                "sales_rep_email": full_dict.get("sales_rep_email", "sales1@tombarrow.com"),
+                "scheduled_time": scheduled_date,
+                "status": "Scheduled",
+                "job_type": job_type,
+                "tbco_account_number": full_dict.get("tbco_account_number", ""),
+                "site_name": full_dict.get("site_name", "")
+            }
+            sync_engine.dispatch_sync_in_background(db, dispatch_payload)
 
             # 3. Publish Rich Ticket Payload to Google Calendar
             try:
@@ -428,7 +442,7 @@ def main(page: ft.Page):
             except Exception as cal_err:
                 print(f"Google Calendar sync note: {cal_err}")
 
-            show_toast_local(f"Dispatched Job #{job_num} to {selected_tech} & synced to Google Calendar!", kind="success")
+            show_toast_local(f"Dispatched Job #{job_num} to {selected_tech} & synced to Cloud + Google Calendar!", kind="success")
             load_live_triage_feed()
             refresh_calendar_fn()
             execute_live_search(None)

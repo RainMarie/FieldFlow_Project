@@ -2,12 +2,13 @@
 src/frontend/forms_component.py
 Consolidated data entry and intake form module for FieldFlow using standardized key names,
 reordered search-first fields, auto-fill blur handlers, PO # support, Contractor PM labels,
-and Dual-Action Project Creation pipeline with direct flat project table lookups.
+Dual-Action Project Creation pipeline, and full local + cloud asset registration.
 """
 
 import os
 import sys
 import time
+import uuid
 import logging
 import flet as ft
 
@@ -18,6 +19,7 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
 from src.frontend.theme import FieldFlowLightTheme
+from src.backend import sync_engine
 from src.backend.db_manager import (
     local_db, 
     db as firestore_db, 
@@ -447,12 +449,12 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
 def build_asset_registration_tool(
     job_data: dict,
-    on_proceed_callback,
-    on_back_callback,
-    show_toast_fn,
-    page: ft.Page
+    on_proceed_callback=None,
+    on_back_callback=None,
+    show_toast_fn=None,
+    page: ft.Page = None
 ) -> ft.Column:
-    """Asset registration wizard for searching and linking equipment tags."""
+    """Asset registration wizard for searching and linking equipment tags to local SQLite and Cloud Firestore."""
     tbc_job_num = str(job_data.get("tbc_job_number", "889900XX"))
 
     search_input_field = ft.TextField(label="Search Equipment Serial Number...", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -460,13 +462,77 @@ def build_asset_registration_tool(
     model_field_confirm = ft.TextField(label="Asset Model Number", border_color=FieldFlowLightTheme.ACCENT_BLUE)
     name_field_confirm = ft.TextField(label="Equipment Name / Tag*", border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
-    tf_manufacturer = ft.TextField(label="Manufacturer", border_color=FieldFlowLightTheme.ACCENT_BLUE)
-    dd_serves = ft.Dropdown(label="Serves", options=[ft.dropdown.Option("Air Handler"), ft.dropdown.Option("Fan"), ft.dropdown.Option("Chiller"), ft.dropdown.Option("Pump")], border_color=FieldFlowLightTheme.ACCENT_BLUE)
+    tf_manufacturer = ft.TextField(label="Manufacturer ID / Name", border_color=FieldFlowLightTheme.ACCENT_BLUE)
+    dd_serves = ft.Dropdown(
+        label="Equipment Type",
+        options=[
+            ft.dropdown.Option("VFD Drive"),
+            ft.dropdown.Option("Air Handler"),
+            ft.dropdown.Option("Fan"),
+            ft.dropdown.Option("Chiller"),
+            ft.dropdown.Option("Pump")
+        ],
+        border_color=FieldFlowLightTheme.ACCENT_BLUE
+    )
 
-    register_btn = ft.ElevatedButton("Register Asset", style=FieldFlowLightTheme.get_primary_button_style())
+    def register_asset_event(e):
+        name_val = name_field_confirm.value.strip() if name_field_confirm.value else ""
+        serial_val = serial_field_confirm.value.strip().upper() if serial_field_confirm.value else ""
+        model_val = model_field_confirm.value.strip() if model_field_confirm.value else ""
+        mfr_val = tf_manufacturer.value.strip() if tf_manufacturer.value else ""
+
+        if not name_val or not serial_val:
+            if show_toast_fn and page:
+                show_toast_fn(page, "Equipment Tag Name and Serial Number are required!", kind="error")
+            return
+
+        asset_id = f"AST-{uuid.uuid4().hex[:8].upper()}"
+        site_name_val = job_data.get("site_name", "Default Campus")
+
+        asset_payload = {
+            "asset_id": asset_id,
+            "tbc_job_number": tbc_job_num,
+            "site_name": site_name_val,
+            "manufacturer_id": mfr_val,
+            "model_number": model_val,
+            "serial_number": serial_val,
+            "equipment_tag": name_val,
+            "operational_status": "Operational"
+        }
+
+        # 1. Save to Local SQLite DB
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO assets (asset_id, tbc_job_number, site_name, manufacturer_id, model_number, serial_number, equipment_tag, operational_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'Operational')
+                """, (asset_id, tbc_job_num, site_name_val, mfr_val, model_val, serial_val, name_val))
+                conn.commit()
+        except Exception as sql_err:
+            logging.error(f"Asset local save error: {sql_err}")
+
+        # 2. Save to Cloud Firestore
+        if firestore_db is not None:
+            try:
+                firestore_db.collection("assets").document(asset_id).set(asset_payload, merge=True)
+            except Exception as fs_err:
+                logging.error(f"Asset cloud save error: {fs_err}")
+
+        if show_toast_fn and page:
+            show_toast_fn(page, f"Asset '{name_val}' registered successfully!", kind="success")
+
+        if on_proceed_callback:
+            on_proceed_callback(asset_payload)
+
+    register_btn = ft.ElevatedButton(
+        "Register Asset",
+        style=FieldFlowLightTheme.get_primary_button_style(),
+        on_click=register_asset_event
+    )
 
     return ft.Column([
-        ft.Row([ft.TextButton("<- Back", on_click=on_back_callback)]),
+        ft.Row([ft.TextButton("<- Back", on_click=on_back_callback)]) if on_back_callback else ft.Container(),
         ft.Text(f"Asset Registration for Job #{tbc_job_num}", size=18, weight=ft.FontWeight.BOLD),
         search_input_field,
         name_field_confirm, serial_field_confirm, model_field_confirm,
@@ -1059,6 +1125,19 @@ def build_service_intake_form(
                         INSERT INTO dispatches (job_id, tbc_job_number, technician_email, sales_rep_email, scheduled_time, status, job_type)
                         VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
                     """, (job_id, intake_payload["tbc_job_number"], dd_technician.value, sales_email_val, tf_scheduled_time.value.strip(), intake_payload["request_type"]))
+
+                    dispatch_payload = {
+                        "job_id": job_id,
+                        "tbc_job_number": intake_payload["tbc_job_number"],
+                        "technician_email": dd_technician.value.strip(),
+                        "sales_rep_email": sales_email_val,
+                        "scheduled_time": tf_scheduled_time.value.strip(),
+                        "status": "Scheduled",
+                        "job_type": intake_payload["request_type"],
+                        "tbco_account_number": acct_val or "",
+                        "site_name": clean_site
+                    }
+                    sync_engine.dispatch_sync_in_background(firestore_db, dispatch_payload)
 
                     try:
                         from src.backend.calendar_manager import GoogleCalendarManager, build_gcal_ticket_description
