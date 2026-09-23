@@ -2,6 +2,7 @@
 src/frontend/admin_dashboard.py
 Control Tower Admin Dashboard integrating side-by-side cockpit, Projects Registry,
 User Management, Master Catalog, and Audit Trail tabs with full FieldFlowLightTheme styling.
+Directly queries flattened projects table without SQL JOINs or column aliases.
 """
 
 import os
@@ -531,48 +532,25 @@ def main(page: ft.Page):
     )
 
     def execute_live_search(e):
-        """Queries local SQLite database first for relational accuracy and immediate UI updates."""
+        """Queries flattened projects table directly without SQL JOINs or column aliases."""
         search_query = search_input.value.strip().lower() if search_input and search_input.value else ""
         projects_list_container.controls.clear()
         is_grid_mode = projects_view_filter["is_grid"]
 
         db_rows = []
 
-        # Step 1: Local-First Query with full Relational JOINs across 5 tables
+        # Step 1: Direct Local Query from flat projects table
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT 
-                        p.tbc_job_number,
-                        p.project_name,
-                        p.site_name,
-                        p.drive_id,
-                        p.stage,
-                        c.company_name AS contractor_company_name,
-                        c.tbco_account_number,
-                        loc.street_address_1,
-                        loc.street_address_2,
-                        loc.city,
-                        loc.state,
-                        loc.postal_code,
-                        loc.country,
-                        cnt.first_name AS pm_first_name,
-                        cnt.last_name AS pm_last_name,
-                        cnt.email AS pm_email,
-                        cnt.phone AS pm_phone,
-                        ir.sales_rep_email,
-                        ir.sales_rep_phone,
-                        ir.team_code
-                    FROM projects p
-                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
-                    LEFT JOIN locations loc ON p.site_name = loc.site_name
-                    LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
-                    LEFT JOIN (
-                        SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
-                        FROM intake_ledger
-                        GROUP BY tbc_job_number
-                    ) ir ON p.tbc_job_number = ir.tbc_job_number
+                        tbc_job_number, project_name, site_name, drive_id, stage,
+                        contractor_company_name, tbco_account_number, street_address_1,
+                        street_address_2, city, state, postal_code, country, pm_first_name,
+                        pm_last_name, pm_email, pm_phone, sales_rep_email, sales_rep_phone,
+                        team_code, photo_url
+                    FROM projects
                 """)
                 for row in cursor.fetchall():
                     r_dict = dict(row)

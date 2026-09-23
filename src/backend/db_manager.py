@@ -114,7 +114,7 @@ class LocalDatabaseManager:
         return conn
 
     def init_sqlite_schema(self):
-        """Initializes all normalized schemas sequentially."""
+        """Initializes all normalized and flattened schemas sequentially."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
@@ -205,7 +205,7 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # 8. PROJECTS
+            # 8. PROJECTS (Flattened to match Cloud Firestore 1-to-1 without joins or aliases)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     tbc_job_number TEXT PRIMARY KEY,
@@ -213,22 +213,41 @@ class LocalDatabaseManager:
                     tbco_account_number TEXT,
                     pm_contact_id TEXT,
                     project_name TEXT,
+                    contractor_company_name TEXT,
+                    street_address_1 TEXT,
+                    street_address_2 TEXT,
+                    city TEXT,
+                    state TEXT,
+                    postal_code TEXT,
+                    country TEXT DEFAULT 'US',
+                    sales_rep_email TEXT,
+                    sales_rep_phone TEXT,
+                    team_code TEXT,
+                    pm_first_name TEXT,
+                    pm_last_name TEXT,
+                    pm_email TEXT,
+                    pm_phone TEXT,
                     po_number TEXT,
                     drive_id TEXT,
                     stage TEXT DEFAULT 'Active',
-                    FOREIGN KEY(site_name) REFERENCES locations(site_name) ON UPDATE CASCADE ON DELETE SET NULL,
-                    FOREIGN KEY(tbco_account_number) REFERENCES contractors(tbco_account_number) ON UPDATE CASCADE ON DELETE SET NULL,
-                    FOREIGN KEY(pm_contact_id) REFERENCES contacts(contact_id) ON DELETE SET NULL
+                    photo_url TEXT
                 );
             """)
 
-            # Dynamic Migration Check for Existing Database File
+            # Dynamic Migration Checks for Existing Database File
             cursor.execute("PRAGMA table_info(projects);")
             existing_cols = [row[1] for row in cursor.fetchall()]
-            if "po_number" not in existing_cols:
-                cursor.execute("ALTER TABLE projects ADD COLUMN po_number TEXT;")
+            new_project_fields = [
+                "contractor_company_name", "street_address_1", "street_address_2", "city",
+                "state", "postal_code", "country", "sales_rep_email", "sales_rep_phone",
+                "team_code", "pm_first_name", "pm_last_name", "pm_email", "pm_phone",
+                "po_number", "photo_url"
+            ]
+            for col_name in new_project_fields:
+                if col_name not in existing_cols:
+                    cursor.execute(f"ALTER TABLE projects ADD COLUMN {col_name} TEXT;")
 
-            # 9. INTAKE LEDGER (Updated to align 1-to-1 with Master Schema Matrix)
+            # 9. INTAKE LEDGER (Matches Cloud Firestore intake_ledger 1-to-1)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS intake_ledger (
                     request_id TEXT PRIMARY KEY,
@@ -376,7 +395,7 @@ class LocalDatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_parts_sku ON parts_master(sku);")
 
             conn.commit()
-        logging.info("Local SQLite Database Engine initialized across normalized tables.")
+        logging.info("Local SQLite Database Engine initialized across normalized and flattened schemas.")
 
 
 cred_manager = WebSafeCredentialManager()

@@ -409,7 +409,6 @@ def build_project_detail_modal(
             "tbco_account_number": company_acct,
             "project_name": proj_name,
             "contractor_company_name": company_name,
-            "contractor_name": company_name,
             "street_address_1": street_1,
             "street_address_2": street_2,
             "city": city_val,
@@ -425,12 +424,12 @@ def build_project_detail_modal(
             "photo_url": final_photo_url
         }
 
-        # Step B: Local SQLite Persistence
+        # Step B: Local SQLite Persistence (Flat projects table write)
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # Dynamic Schema Migration Check for photo_url column
+                # Dynamic Schema Migration Check
                 cursor.execute("PRAGMA table_info(projects);")
                 proj_cols = [row[1] for row in cursor.fetchall()]
                 if "photo_url" not in proj_cols:
@@ -464,13 +463,20 @@ def build_project_detail_modal(
 
                 updated_payload["pm_contact_id"] = pm_contact_id
 
-                # 4. Upsert into PROJECTS master table (storing final_photo_url)
+                # 4. Upsert into PROJECTS master table directly holding all flat fields
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
-                        tbc_job_number, site_name, tbco_account_number, pm_contact_id,
-                        project_name, drive_id, stage, photo_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (job_num, site_name, company_acct, pm_contact_id, proj_name, drive_id_val, stage_val, final_photo_url))
+                        tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name,
+                        contractor_company_name, street_address_1, street_address_2, city, state,
+                        postal_code, country, pm_first_name, pm_last_name, pm_email, pm_phone,
+                        drive_id, stage, photo_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    job_num, site_name, company_acct, pm_contact_id, proj_name,
+                    company_name, street_1, street_2, city_val, state_val,
+                    postal_val, country_val, pm_first, pm_last, pm_email, pm_phone,
+                    drive_id_val, stage_val, final_photo_url
+                ))
 
                 # 5. Sync all matching records in INTAKE_LEDGER table
                 cursor.execute("""

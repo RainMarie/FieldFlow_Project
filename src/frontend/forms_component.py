@@ -2,7 +2,7 @@
 src/frontend/forms_component.py
 Consolidated data entry and intake form module for FieldFlow using standardized key names,
 reordered search-first fields, auto-fill blur handlers, PO # support, Contractor PM labels,
-and Dual-Action Project Creation pipeline.
+and Dual-Action Project Creation pipeline with direct flat project table lookups.
 """
 
 import os
@@ -118,7 +118,7 @@ def on_contractor_blur_helper(tf_company: ft.TextField, tf_company_acct: ft.Text
 # =========================================================================
 
 def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:
-    """Project Creation Form with search-first field ordering and Contractor PM integration."""
+    """Project Creation Form saving flat project fields directly to SQLite and Firestore."""
     
     tf_job_num = ft.TextField(label="TBCo Job #*", hint_text="e.g. 287027TI", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -368,7 +368,8 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
             "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
             "team_code": dd_team_code.value if dd_team_code.value else "",
             "drive_id": drive_id,
-            "stage": "In Progress"
+            "stage": "In Progress",
+            "photo_url": staged_photo_path["value"]
         }
 
         try:
@@ -376,10 +377,17 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
-                        tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name, po_number, drive_id, stage
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name,
+                        contractor_company_name, street_address_1, street_address_2, city, state,
+                        postal_code, country, sales_rep_email, sales_rep_phone, team_code,
+                        pm_first_name, pm_last_name, pm_email, pm_phone, po_number, drive_id, stage, photo_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    job_num, clean_site, clean_acct, clean_pm_id, p_name, po_num, drive_id, "In Progress"
+                    job_num, clean_site, clean_acct, clean_pm_id, p_name,
+                    company, street_1, street_2, city_val, state_val,
+                    zip_val, "US", sales_email_val, tf_sales_phone.value.strip() if tf_sales_phone.value else "",
+                    dd_team_code.value if dd_team_code.value else "", pm_first, pm_last, pm_email, pm_phone,
+                    po_num, drive_id, "In Progress", staged_photo_path["value"]
                 ))
                 conn.commit()
         except Exception as sql_err:
@@ -573,7 +581,7 @@ def build_service_intake_form(
     on_success_callback=None,
     get_tech_options_fn=None
 ) -> ft.Control:
-    """Service Ticket Intake Form with search-first field ordering, Job # on-blur auto-fill, PO # support, and Contractor PM integration."""
+    """Service Ticket Intake Form querying flat project table directly without relational joins."""
     
     # 1. Sales Rep Search Controls
     sales_instructions_note = ft.Text(
@@ -663,7 +671,7 @@ def build_service_intake_form(
     tf_pm_email = ft.TextField(label="Contractor PM Email", hint_text="e.g. asmith@acme.com", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_pm_phone = ft.TextField(label="Contractor PM Phone", hint_text="e.g. 813-555-0199", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
 
-    # 4. Job & Location Controls with PO #
+    # 4. Job & Location Controls with PO # (Direct Query without SQL JOINs)
     def on_job_num_blur(e):
         clean_job = tf_job_num.value.strip().upper() if tf_job_num.value else ""
         if not clean_job:
@@ -674,23 +682,12 @@ def build_service_intake_form(
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT 
-                        p.tbc_job_number, p.project_name, p.site_name, p.po_number, p.tbco_account_number,
-                        c.company_name AS contractor_company_name,
-                        loc.street_address_1, loc.street_address_2, loc.city, loc.state, loc.postal_code, loc.country,
-                        cnt.first_name AS pm_first_name, cnt.last_name AS pm_last_name, cnt.email AS pm_email, cnt.phone AS pm_phone,
-                        ir.sales_rep_email, ir.sales_rep_phone, ir.team_code,
-                        u.first_name AS sales_rep_first_name, u.last_name AS sales_rep_last_name
-                    FROM projects p
-                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
-                    LEFT JOIN locations loc ON p.site_name = loc.site_name
-                    LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
-                    LEFT JOIN (
-                        SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
-                        FROM intake_ledger
-                        GROUP BY tbc_job_number
-                    ) ir ON p.tbc_job_number = ir.tbc_job_number
-                    LEFT JOIN users u ON ir.sales_rep_email = u.user_email
-                    WHERE UPPER(p.tbc_job_number) = ?
+                        tbc_job_number, project_name, site_name, po_number, tbco_account_number,
+                        contractor_company_name, street_address_1, street_address_2, city, state,
+                        postal_code, country, pm_first_name, pm_last_name, pm_email, pm_phone,
+                        sales_rep_email, sales_rep_phone, team_code
+                    FROM projects
+                    WHERE UPPER(tbc_job_number) = ?
                     LIMIT 1
                 """, (clean_job,))
                 row = cursor.fetchone()
@@ -759,7 +756,7 @@ def build_service_intake_form(
         page.overlay.append(docs_picker)
 
     def populate_data(proj_data):
-        """Safely prefill form fields from dictionary payload or job number string with DB fallback."""
+        """Safely prefill form fields from flat dictionary payload or job number string with DB fallback."""
         if get_tech_options_fn:
             dd_technician.options = get_tech_options_fn()
 
@@ -770,30 +767,19 @@ def build_service_intake_form(
             payload = dict(proj_data or {})
             job_num = str(payload.get("tbc_job_number") or payload.get("job_number") or "").strip().upper()
 
-        # Database Fallback Lookup if key details are missing from payload
+        # Direct Database Fallback Lookup from flat projects table
         if job_num:
             try:
                 with local_db.get_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT 
-                            p.tbc_job_number, p.project_name, p.site_name, p.po_number, p.tbco_account_number,
-                            c.company_name AS contractor_company_name,
-                            loc.street_address_1, loc.street_address_2, loc.city, loc.state, loc.postal_code, loc.country,
-                            cnt.first_name AS pm_first_name, cnt.last_name AS pm_last_name, cnt.email AS pm_email, cnt.phone AS pm_phone,
-                            ir.sales_rep_email, ir.sales_rep_phone, ir.team_code,
-                            u.first_name AS sales_rep_first_name, u.last_name AS sales_rep_last_name
-                        FROM projects p
-                        LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
-                        LEFT JOIN locations loc ON p.site_name = loc.site_name
-                        LEFT JOIN contacts cnt ON p.pm_contact_id = cnt.contact_id
-                        LEFT JOIN (
-                            SELECT tbc_job_number, sales_rep_email, sales_rep_phone, team_code
-                            FROM intake_ledger
-                            GROUP BY tbc_job_number
-                        ) ir ON p.tbc_job_number = ir.tbc_job_number
-                        LEFT JOIN users u ON ir.sales_rep_email = u.user_email
-                        WHERE UPPER(p.tbc_job_number) = ?
+                            tbc_job_number, project_name, site_name, po_number, tbco_account_number,
+                            contractor_company_name, street_address_1, street_address_2, city, state,
+                            postal_code, country, pm_first_name, pm_last_name, pm_email, pm_phone,
+                            sales_rep_email, sales_rep_phone, team_code
+                        FROM projects
+                        WHERE UPPER(tbc_job_number) = ?
                         LIMIT 1
                     """, (job_num,))
                     row = cursor.fetchone()
@@ -935,7 +921,7 @@ def build_service_intake_form(
 
         clean_site = resolve_location(site_name, tf_street_1.value.strip(), tf_street_2.value.strip() if tf_street_2.value else "", tf_city.value.strip(), tf_state.value.strip(), tf_postal.value.strip() if tf_postal.value else "", country="US")
 
-        # Step 1: Check if Project Space Exists in Local SQLite
+        # Step 1: Check if Project Space Exists in Local SQLite (Flat Write)
         drive_id = None
         try:
             with local_db.get_connection() as conn:
@@ -957,11 +943,21 @@ def build_service_intake_form(
 
                     cursor.execute("""
                         INSERT OR REPLACE INTO projects (
-                            tbc_job_number, site_name, tbco_account_number, pm_contact_id,
-                            project_name, po_number, drive_id, stage
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'In Progress')
+                            tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name,
+                            contractor_company_name, street_address_1, street_address_2, city, state,
+                            postal_code, country, sales_rep_email, sales_rep_phone, team_code,
+                            pm_first_name, pm_last_name, pm_email, pm_phone, po_number, drive_id, stage
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'In Progress')
                     """, (
-                        job_num, clean_site, acct_val, clean_pm_id, proj_name, po_num, drive_id
+                        job_num, clean_site, acct_val, clean_pm_id, proj_name,
+                        tf_company.value.strip(), tf_street_1.value.strip(), tf_street_2.value.strip() if tf_street_2.value else "",
+                        tf_city.value.strip(), tf_state.value.strip(), tf_postal.value.strip() if tf_postal.value else "", "US",
+                        sales_email_val, tf_sales_phone.value.strip() if tf_sales_phone.value else "",
+                        dd_team_code.value if dd_team_code.value else "",
+                        tf_pm_first.value.strip() if tf_pm_first.value else "",
+                        tf_pm_last.value.strip() if tf_pm_last.value else "",
+                        pm_email_val, tf_pm_phone.value.strip() if tf_pm_phone.value else "",
+                        po_num, drive_id
                     ))
                     conn.commit()
 
@@ -973,6 +969,20 @@ def build_service_intake_form(
                                 "tbco_account_number": acct_val,
                                 "pm_contact_id": clean_pm_id,
                                 "project_name": proj_name,
+                                "contractor_company_name": tf_company.value.strip(),
+                                "street_address_1": tf_street_1.value.strip(),
+                                "street_address_2": tf_street_2.value.strip() if tf_street_2.value else "",
+                                "city": tf_city.value.strip(),
+                                "state": tf_state.value.strip(),
+                                "postal_code": tf_postal.value.strip() if tf_postal.value else "",
+                                "country": "US",
+                                "sales_rep_email": sales_email_val,
+                                "sales_rep_phone": tf_sales_phone.value.strip() if tf_sales_phone.value else "",
+                                "team_code": dd_team_code.value if dd_team_code.value else "",
+                                "pm_first_name": tf_pm_first.value.strip() if tf_pm_first.value else "",
+                                "pm_last_name": tf_pm_last.value.strip() if tf_pm_last.value else "",
+                                "pm_email": pm_email_val,
+                                "pm_phone": tf_pm_phone.value.strip() if tf_pm_phone.value else "",
                                 "po_number": po_num,
                                 "drive_id": drive_id,
                                 "stage": "In Progress"

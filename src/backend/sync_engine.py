@@ -1,6 +1,7 @@
 """
 src/backend/sync_engine.py
 Handles asynchronous cloud synchronization between local SQLite records and Cloud Firestore.
+Synchronizes intake records to the standardized 'intake_ledger' cloud collection.
 """
 
 import re
@@ -73,7 +74,7 @@ def dispatch_sync_in_background(db_client, local_row: dict):
 
 def map_intake_to_cloud(db_client, intake_data: dict) -> bool:
     """
-    Takes a local intake request record and uploads it to the standardized 'intake_requests' cloud collection.
+    Takes a local intake request record and uploads it to the standardized 'intake_ledger' cloud collection.
     """
     if db_client is None:
         logging.warning("[INTAKE CLOUD SKIP] Cloud store routing offline. Retaining intake record locally.")
@@ -114,8 +115,8 @@ def map_intake_to_cloud(db_client, intake_data: dict) -> bool:
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             logging.info(f"[INTAKE CLOUD SYNC {attempt}/{MAX_ATTEMPTS}] Syncing intake {request_id} to Firestore...")
-            db_client.collection("intake_requests").document(request_id).set(cloud_payload, merge=True)
-            logging.info(f"[INTAKE CLOUD SUCCESS] Document {request_id} mapped to collection intake_requests.")
+            db_client.collection("intake_ledger").document(request_id).set(cloud_payload, merge=True)
+            logging.info(f"[INTAKE CLOUD SUCCESS] Document {request_id} mapped to collection intake_ledger.")
             return True
         except Exception as error_token:
             jitter_delay = random.uniform(0.5, 1.5)
