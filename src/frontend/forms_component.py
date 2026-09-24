@@ -179,27 +179,53 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
     def on_photo_picked(e: ft.FilePickerResultEvent):
         if e.files:
-            selected_file = e.files
-            staged_photo_path["value"] = selected_file.path if hasattr(selected_file, 'path') and selected_file.path else selected_file.name
-            photo_status_txt.value = f"Photo Staged: {os.path.basename(staged_photo_path['value'])}"
-            photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
-            page.update()
+            selected_file = e.files[0]
+            file_path = getattr(selected_file, "path", None) or getattr(selected_file, "name", None)
+            if file_path:
+                staged_photo_path["value"] = file_path
+                photo_status_txt.value = f"Photo Staged: {os.path.basename(file_path)}"
+                photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
+                if page:
+                    page.update()
 
     def on_docs_picked(e: ft.FilePickerResultEvent):
         if e.files:
             staged_documents.clear()
             for f in e.files:
-                staged_documents.append(f.path if hasattr(f, 'path') and f.path else f.name)
+                f_path = getattr(f, "path", None) or getattr(f, "name", None)
+                if f_path:
+                    staged_documents.append(f_path)
             docs_status_txt.value = f"{len(staged_documents)} Document(s) Staged"
             docs_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
-            page.update()
+            if page:
+                page.update()
 
     photo_picker = ft.FilePicker(on_result=on_photo_picked)
     docs_picker = ft.FilePicker(on_result=on_docs_picked)
-    page.overlay.extend([photo_picker, docs_picker])
 
-    btn_upload_photo = ft.OutlinedButton("Select Photo", style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: photo_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE))
-    btn_upload_docs = ft.OutlinedButton("Upload Documents", style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True))
+    if photo_picker not in page.overlay:
+        page.overlay.append(photo_picker)
+    if docs_picker not in page.overlay:
+        page.overlay.append(docs_picker)
+
+    if page:
+        page.update()
+
+    btn_upload_photo = ft.OutlinedButton(
+        "Select Photo",
+        icon=ft.icons.IMAGE,
+        style=FieldFlowLightTheme.get_secondary_button_style(),
+        on_click=lambda _: photo_picker.pick_files(
+            allow_multiple=False,
+            allowed_extensions=["png", "jpg", "jpeg", "webp"]
+        )
+    )
+    btn_upload_docs = ft.OutlinedButton(
+        "Upload Documents",
+        icon=ft.icons.ATTACH_FILE,
+        style=FieldFlowLightTheme.get_secondary_button_style(),
+        on_click=lambda _: docs_picker.pick_files(allow_multiple=True)
+    )
 
     def clear_form(e=None):
         tf_job_num.value = ""
@@ -234,7 +260,8 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
         docs_status_txt.value = "No Staged Documents"
         docs_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
 
-        if page: page.update()
+        if page:
+            page.update()
 
     def submit_project_creation(e):
         if not tf_job_num.value or not tf_proj_name.value or not tf_company.value or not tf_street_1.value or not tf_city.value or not tf_state.value:
@@ -365,7 +392,6 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
     form_container.submit_form = submit_project_creation
 
     return form_container
-
 
 # =========================================================================
 # 2. ASSET REGISTRATION TOOL COMPONENT
@@ -570,7 +596,7 @@ def build_master_forms(page: ft.Page, get_tech_options_fn=None, on_success_callb
 # 4. SERVICE TICKET INTAKE FORM COMPONENT
 # =========================================================================
 def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_success_callback=None, get_tech_options_fn=None) -> ft.Control:
-    """Service Ticket Intake Form featuring live database prefilling on Job # and Email blur handlers."""
+    """Service Ticket Intake Form featuring dual-stage prefilling for Sales Reps and clean independent Site Contacts."""
     tf_job_num = ft.TextField(label="TBCo Job #*", hint_text="e.g. 287027TI", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -625,7 +651,7 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
             page.update()
 
     def populate_data(proj_data):
-        """Populates intake form controls directly from dictionary payload."""
+        """Populates intake form controls directly from dictionary payload with dual-stage Sales Rep prefilling."""
         if not isinstance(proj_data, dict):
             return
 
@@ -637,11 +663,13 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
         tf_site_name.value = proj_data.get("site_name", "")
         tf_company.value = proj_data.get("contractor_company_name", "")
 
-        sales_email_val = proj_data.get("sales_rep_email", "")
+        # 1. Sales Representative Prefill
+        sales_email_val = proj_data.get("sales_rep_email") or proj_data.get("sales_email") or ""
         tf_sales_email.value = sales_email_val
-        tf_sales_phone.value = proj_data.get("sales_rep_phone", "")
+        tf_sales_phone.value = proj_data.get("sales_rep_phone") or proj_data.get("sales_phone") or ""
         dd_team_code.value = proj_data.get("team_code") or None
 
+        user_found = False
         if sales_email_val:
             try:
                 with local_db.get_connection() as conn:
@@ -653,20 +681,26 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
                         tf_sales_last.value = u_row["last_name"] or ""
                         if not tf_sales_phone.value:
                             tf_sales_phone.value = u_row["user_phone"] or ""
+                        user_found = True
             except Exception as err:
                 logging.warning(f"Sales user prefill lookup note: {err}")
 
-        # Prefill PM
+        # Fallback to direct project dictionary keys if not found in users table
+        if not user_found:
+            tf_sales_first.value = proj_data.get("sales_rep_first_name") or proj_data.get("sales_first") or ""
+            tf_sales_last.value = proj_data.get("sales_rep_last_name") or proj_data.get("sales_last") or ""
+
+        # 2. Contractor Project Manager Prefill
         tf_pm_first.value = proj_data.get("pm_first_name", "")
         tf_pm_last.value = proj_data.get("pm_last_name", "")
         tf_pm_email.value = proj_data.get("pm_email", "")
         tf_pm_phone.value = proj_data.get("pm_phone", "")
 
-        # Prefill Site Contact
-        tf_contact_first.value = proj_data.get("project_site_contact_first_name") or proj_data.get("pm_first_name", "")
-        tf_contact_last.value = proj_data.get("project_site_contact_last_name") or proj_data.get("pm_last_name", "")
-        tf_contact_email.value = proj_data.get("project_site_contact_email") or proj_data.get("pm_email", "")
-        tf_contact_phone.value = proj_data.get("project_site_contact_phone") or proj_data.get("pm_phone", "")
+        # 3. Independent Site Contact Prefill (no fallback to PM)
+        tf_contact_first.value = proj_data.get("project_site_contact_first_name") or proj_data.get("contact_first_name") or ""
+        tf_contact_last.value = proj_data.get("project_site_contact_last_name") or proj_data.get("contact_last_name") or ""
+        tf_contact_email.value = proj_data.get("project_site_contact_email") or proj_data.get("contact_email") or ""
+        tf_contact_phone.value = proj_data.get("project_site_contact_phone") or proj_data.get("contact_phone") or ""
 
         if page:
             page.update()
