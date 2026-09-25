@@ -4,7 +4,7 @@ Consolidated data entry and intake form module for FieldFlow using standardized 
 auto-fill blur handlers, PO # support, Contractor PM labels, Dual-Action Project Creation pipeline,
 full local + cloud asset registration, automatic form resets, live search prefilling
 for Salesmen, Contractor PMs, and Project Site Contacts, file attachment support for service intake,
-and wrapped AlertDialog modal builders.
+automatic Google Drive photo & document uploads, and wrapped AlertDialog modal builders.
 """
 
 import os
@@ -872,12 +872,44 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
 
         req_id = f"REQ-{uuid.uuid4().hex[:8].upper()}"
         job_num = tf_job_num.value.strip().upper()
+        proj_name = tf_proj_name.value.strip()
         sales_email = tf_sales_email.value.strip().lower() if tf_sales_email.value else ""
+        sales_name = f"{tf_sales_first.value} {tf_sales_last.value}".strip() or "Sales Representative"
+
+        # 1. Gather all attached file paths for Drive upload
+        files_to_upload = []
+        raw_photo = staged_photo_path["value"]
+        if raw_photo and os.path.exists(raw_photo) and os.path.isfile(raw_photo):
+            files_to_upload.append(raw_photo)
+
+        for doc_p in staged_documents:
+            if doc_p and os.path.exists(doc_p) and os.path.isfile(doc_p) and doc_p not in files_to_upload:
+                files_to_upload.append(doc_p)
+
+        drive_photo_url = raw_photo
+        drive_id = f"FLD-GDRV-{job_num}"
+
+        # 2. Upload attachments directly to Google Drive Shared Folder
+        if files_to_upload:
+            try:
+                drive_info = ensure_project_drive_folder(
+                    job_number=job_num,
+                    project_name=proj_name,
+                    requestor_name=sales_name,
+                    requestor_email=sales_email,
+                    attached_file_paths=files_to_upload
+                )
+                drive_id = drive_info.get("drive_id", drive_id)
+                if drive_info.get("photo_url"):
+                    drive_photo_url = drive_info.get("photo_url")
+                logging.info(f"📸 Service request files uploaded to Drive folder '{drive_id}'. Photo URL: {drive_photo_url}")
+            except Exception as drive_err:
+                logging.warning(f"Drive upload note during service intake: {drive_err}")
 
         intake_payload = {
             "request_id": req_id,
             "tbc_job_number": job_num,
-            "project_name": tf_proj_name.value.strip(),
+            "project_name": proj_name,
             "site_name": tf_site_name.value.strip(),
             "contractor_company_name": tf_company.value.strip(),
             "sales_rep_email": sales_email,
@@ -892,7 +924,7 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
             "project_site_contact_email": tf_contact_email.value.strip().lower(),
             "project_site_contact_phone": tf_contact_phone.value.strip(),
             "issue_description": tf_issue.value.strip(),
-            "photo_url": staged_photo_path["value"],
+            "photo_url": drive_photo_url,
             "attached_files": staged_documents,
             "triage_status": "Unassigned",
             "submission_timestamp": datetime.now().isoformat()
@@ -927,7 +959,7 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
             except Exception as fs_err:
                 logging.error(f"Firestore service intake save error: {fs_err}")
 
-        show_toast(page, f"Service Request #{req_id} Created!", kind="success")
+        show_toast(page, f"Service Request #{req_id} Created & Files Uploaded to Google Drive!", kind="success")
         clear_form()
 
         if on_success_callback:
