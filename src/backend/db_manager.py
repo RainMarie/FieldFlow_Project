@@ -119,29 +119,43 @@ class LocalDatabaseManager:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
 
-            # 1. LOCATIONS
+            # 9. INTAKE LEDGER (Matches Cloud Firestore intake_ledger 1-to-1)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS locations (
-                    site_name TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS intake_ledger (
+                    request_id TEXT PRIMARY KEY,
+                    tbc_job_number TEXT,
+                    team_code TEXT,
+                    site_name TEXT,
+                    project_name TEXT,
+                    contractor_company_name TEXT,
                     street_address_1 TEXT,
                     street_address_2 TEXT,
                     city TEXT,
                     state TEXT,
                     postal_code TEXT,
                     country TEXT DEFAULT 'US',
-                    site_contact_id TEXT,
-                    FOREIGN KEY(site_contact_id) REFERENCES contacts(contact_id) ON DELETE SET NULL
+                    sales_rep_email TEXT,
+                    sales_rep_phone TEXT,
+                    project_site_contact_first_name TEXT,
+                    project_site_contact_last_name TEXT,
+                    project_site_contact_email TEXT,
+                    project_site_contact_phone TEXT,
+                    issue_description TEXT,
+                    triage_status TEXT DEFAULT 'Unassigned',
+                    request_type TEXT,
+                    submission_timestamp TEXT NOT NULL,
+                    photo_url TEXT,
+                    FOREIGN KEY(tbc_job_number) REFERENCES projects(tbc_job_number) ON DELETE SET NULL,
+                    FOREIGN KEY(site_name) REFERENCES locations(site_name) ON DELETE SET NULL,
+                    FOREIGN KEY(sales_rep_email) REFERENCES users(user_email) ON DELETE SET NULL
                 );
             """)
 
-            # 2. CONTRACTORS
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS contractors (
-                    tbco_account_number TEXT PRIMARY KEY,
-                    company_name TEXT NOT NULL,
-                    trade_specialty TEXT
-                );
-            """)
+            # Dynamic Migration Check for intake_ledger table
+            cursor.execute("PRAGMA table_info(intake_ledger);")
+            existing_intake_cols = [row[1] for row in cursor.fetchall()]
+            if "photo_url" not in existing_intake_cols:
+                cursor.execute("ALTER TABLE intake_ledger ADD COLUMN photo_url TEXT;")
 
             # 3. USERS
             cursor.execute("""
