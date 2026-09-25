@@ -506,6 +506,10 @@ def build_project_detail_modal(
             logging.error(f"SQLite project detail save error: {sql_err}")
             show_toast(page, f"Save Failed: {str(sql_err)}", kind="error")
 
+    def archive_project_action(e):
+        edit_stage.value = "Archived"
+        save_project_detail_edits(e)
+
     # Tab 1 View: Form Container
     vitals_tab_content = ft.Container(
         padding=ft.padding.only(left=8, right=16, top=8, bottom=8),
@@ -560,6 +564,7 @@ def build_project_detail_modal(
             content=modal_tabs
         ),
         actions=[
+            ft.TextButton("Archive Project", icon=ft.icons.ARCHIVE, icon_color="amber", on_click=archive_project_action),
             ft.TextButton("Cancel", on_click=lambda _: [setattr(project_detail_modal_dialog, 'open', False), page.update()]),
             ft.ElevatedButton("Save Project Details", icon=ft.icons.SAVE, style=FieldFlowLightTheme.get_primary_button_style(), on_click=save_project_detail_edits)
         ]

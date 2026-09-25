@@ -193,7 +193,8 @@ def build_project_card(
     is_grid_mode: bool = True,
     on_edit_action=None,
     on_drive_action=None,
-    on_service_request_action=None
+    on_service_request_action=None,
+    on_unarchive_action=None
 ) -> ft.Card:
     """
     Renders a project card container for Projects Registry in Grid or List mode.
@@ -295,7 +296,7 @@ def build_project_card(
     if is_grid_mode:
         img_control = build_project_image_control(photo_url, height=120)
         
-        # Upper clickable body container (triggers project edit dialog only)
+        # Upper clickable body container (triggers project edit dialog)
         card_body = ft.Container(
             on_click=handle_edit_click,
             ink=True,
@@ -337,25 +338,31 @@ def build_project_card(
             )
         )
 
-        # Isolated action bar (no parent click handler attached)
+        row_buttons = [
+            ft.OutlinedButton(
+                "Drive",
+                icon=ft.icons.LAUNCH,
+                on_click=handle_drive_click,
+                style=FieldFlowLightTheme.get_secondary_button_style()
+            )
+        ]
+
+        if on_unarchive_action:
+            row_buttons.append(
+                ft.ElevatedButton(
+                    "Unarchive",
+                    icon=ft.icons.UNARCHIVE,
+                    on_click=lambda e: on_unarchive_action(e),
+                    style=ft.ButtonStyle(bgcolor=FieldFlowLightTheme.PRIMARY_GREEN, color="white")
+                )
+            )
+
+        # Isolated action bar
         card_actions = ft.Column(
             [
                 ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
                 ft.Row(
-                    [
-                        ft.OutlinedButton(
-                            "Drive",
-                            icon=ft.icons.LAUNCH,
-                            on_click=handle_drive_click,
-                            style=FieldFlowLightTheme.get_secondary_button_style()
-                        ),
-                        ft.OutlinedButton(
-                            "Edit",
-                            icon=ft.icons.EDIT,
-                            on_click=handle_edit_click,
-                            style=FieldFlowLightTheme.get_secondary_button_style()
-                        ),
-                    ],
+                    row_buttons,
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN
                 ),
                 ft.ElevatedButton(
@@ -388,7 +395,7 @@ def build_project_card(
             clip_behavior=ft.ClipBehavior.HARD_EDGE
         )
 
-        # Clickable info section container (triggers project edit dialog only)
+        # Clickable info section container (triggers project edit dialog)
         list_info_section = ft.Container(
             on_click=handle_edit_click,
             ink=True,
@@ -418,28 +425,34 @@ def build_project_card(
             )
         )
 
-        # Isolated right-aligned action buttons (no parent click handler attached)
+        action_controls = [
+            ft.ElevatedButton(
+                "+ Service Request",
+                icon=ft.icons.POST_ADD,
+                on_click=handle_service_request_click,
+                style=FieldFlowLightTheme.get_primary_button_style()
+            ),
+            ft.IconButton(
+                icon=ft.icons.FOLDER_OUTLINED,
+                icon_color=FieldFlowLightTheme.PINK_PRIMARY,
+                tooltip="Open Drive Folder",
+                on_click=handle_drive_click
+            )
+        ]
+
+        if on_unarchive_action:
+            action_controls.append(
+                ft.IconButton(
+                    icon=ft.icons.UNARCHIVE_OUTLINED,
+                    icon_color=FieldFlowLightTheme.PRIMARY_GREEN,
+                    tooltip="Unarchive Project",
+                    on_click=lambda e: on_unarchive_action(e)
+                )
+            )
+
+        # Isolated right-aligned action buttons
         list_action_section = ft.Row(
-            [
-                ft.ElevatedButton(
-                    "+ Service Request",
-                    icon=ft.icons.POST_ADD,
-                    on_click=handle_service_request_click,
-                    style=FieldFlowLightTheme.get_primary_button_style()
-                ),
-                ft.IconButton(
-                    icon=ft.icons.FOLDER_OUTLINED,
-                    icon_color=FieldFlowLightTheme.PINK_PRIMARY,
-                    tooltip="Open Drive Folder",
-                    on_click=handle_drive_click
-                ),
-                ft.IconButton(
-                    icon=ft.icons.EDIT_OUTLINED,
-                    icon_color=FieldFlowLightTheme.TEXT_PRIMARY,
-                    tooltip="Edit Project Details",
-                    on_click=handle_edit_click
-                ),
-            ],
+            action_controls,
             spacing=6
         )
 

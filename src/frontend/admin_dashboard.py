@@ -2,7 +2,7 @@
 src/frontend/admin_dashboard.py
 Control Tower Admin Dashboard integrating side-by-side cockpit, Projects Registry,
 User Management, Master Catalog, and Audit Trail tabs with full FieldFlowLightTheme styling.
-Directly queries flattened projects table without SQL JOINs or column aliases.
+Queries projects table directly with automated Cloud Firestore to local SQLite backfill sync.
 """
 
 import os
@@ -47,8 +47,8 @@ from src.frontend.details_component import (
     build_project_detail_modal
 )
 from src.frontend.forms_component import (
-    build_service_intake_form,
-    build_project_creation_form,
+    build_service_intake_modal,
+    build_project_creation_modal,
     build_master_forms as build_master_data_management_view
 )
 from src.frontend.calendar_component import build_calendar_widget
@@ -252,27 +252,13 @@ def main(page: ft.Page):
             triage_cards_container.controls.append(card)
         page.update()
 
-    intake_form_widget = build_service_intake_form(
-        page,
+    intake_modal, intake_form_widget = build_service_intake_modal(
+        page=page,
         get_tech_options_fn=get_tech_options,
         on_success_callback=lambda payload: [
-            setattr(intake_modal, 'open', False),
             load_live_triage_feed(),
             refresh_calendar_fn(),
             execute_live_search(None)
-        ]
-    )
-
-    intake_modal = ft.AlertDialog(
-        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-        title=ft.Row([
-            ft.Icon(ft.icons.POST_ADD, color=FieldFlowLightTheme.PINK_PRIMARY, size=26), 
-            ft.Text("New Service Request Intake", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
-        ]),
-        content=ft.Container(content=intake_form_widget, width=760, height=540, padding=0),
-        actions=[
-            ft.TextButton("Cancel", on_click=lambda _: [setattr(intake_modal, 'open', False), page.update()]),
-            ft.ElevatedButton("Create Service Request", style=FieldFlowLightTheme.get_primary_button_style(), on_click=lambda e: intake_form_widget.submit_form(e) if hasattr(intake_form_widget, 'submit_form') else None)
         ]
     )
     page.overlay.append(intake_modal)
@@ -292,22 +278,9 @@ def main(page: ft.Page):
         show_toast_local(f"Initiating Service Request for Job #{job_num}", kind="info")
         page.update()
 
-    project_form_widget = build_project_creation_form(
-        page,
-        on_success_callback=lambda payload: [
-            setattr(direct_project_modal, 'open', False),
-            execute_live_search(None)
-        ]
-    )
-
-    direct_project_modal = ft.AlertDialog(
-        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
-        title=ft.Row([
-            ft.Icon(ft.icons.CREATE_NEW_FOLDER, color=FieldFlowLightTheme.PRIMARY_GREEN, size=26), 
-            ft.Text("Create New Project Folder", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
-        ]),
-        content=ft.Container(content=project_form_widget, width=520, padding=10),
-        actions=[ft.TextButton("Cancel", on_click=lambda _: [setattr(direct_project_modal, 'open', False), page.update()])]
+    direct_project_modal, project_form_widget = build_project_creation_modal(
+        page=page,
+        on_success_callback=lambda payload: [execute_live_search(None), load_archived_projects()]
     )
     page.overlay.append(direct_project_modal)
 
@@ -340,7 +313,7 @@ def main(page: ft.Page):
 
     project_detail_modal, populate_project_data = build_project_detail_modal(
         page=page, open_drive_link_fn=open_drive_local, show_toast_fn=show_toast_local,
-        on_save_callback=lambda payload: execute_live_search(None)
+        on_save_callback=lambda payload: [execute_live_search(None), load_archived_projects()]
     )
     page.overlay.append(project_detail_modal)
 
@@ -389,7 +362,6 @@ def main(page: ft.Page):
                     VALUES (?, ?, ?, ?, 'Scheduled', ?)
                 """, (job_id, job_num, selected_tech, scheduled_date, job_type))
 
-                # Query full intake details to construct rich Google Calendar & Cloud Sync payload
                 cursor.execute("SELECT * FROM intake_ledger WHERE request_id = ?", (req_id,))
                 full_row = cursor.fetchone()
                 full_dict = dict(full_row) if full_row else req_data
@@ -426,7 +398,6 @@ def main(page: ft.Page):
 
                 rich_desc = build_gcal_ticket_description(full_dict)
 
-                # Format start/end ISO timestamps for an 8 AM - 12 PM window
                 clean_date = scheduled_date[:10] if len(scheduled_date) >= 10 else datetime.now().strftime("%Y-%m-%d")
                 start_iso = f"{clean_date}T08:00:00Z"
                 end_iso = f"{clean_date}T12:00:00Z"
@@ -484,6 +455,7 @@ def main(page: ft.Page):
     )
 
     projects_list_container = ft.Row(wrap=True, spacing=12)
+    archived_projects_list_container = ft.Row(wrap=True, spacing=12)
 
     def toggle_grid_list_view_mode(e):
         projects_view_filter["is_grid"] = not projects_view_filter["is_grid"]
@@ -494,6 +466,7 @@ def main(page: ft.Page):
             view_mode_button.icon = ft.icons.VIEW_MODULE
             view_mode_button.tooltip = "Switch to Grid View"
         execute_live_search(None)
+        load_archived_projects()
 
     view_mode_button = ft.IconButton(
         icon=ft.icons.VIEW_LIST,
@@ -546,14 +519,88 @@ def main(page: ft.Page):
     )
 
     def execute_live_search(e):
-        """Queries flattened projects table directly without SQL JOINs or column aliases."""
+        """Queries projects table with automated Cloud Firestore to local SQLite backfill sync."""
         search_query = search_input.value.strip().lower() if search_input and search_input.value else ""
         projects_list_container.controls.clear()
         is_grid_mode = projects_view_filter["is_grid"]
 
-        db_rows = []
+        # Step 1: Backfill missing Cloud Firestore project documents into local SQLite database
+        if db is not None:
+            try:
+                projects_stream = db.collection("projects").stream()
+                with local_db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    for doc in projects_stream:
+                        p_dict = doc.to_dict()
+                        job_num = doc.id or p_dict.get("tbc_job_number")
+                        if not job_num:
+                            continue
 
-        # Step 1: Direct Local Query from flat projects table
+                        drive_id = p_dict.get("drive_id") or f"FLD-DRIVE-{job_num}"
+
+                        cursor.execute("""
+                            INSERT INTO projects (
+                                tbc_job_number, site_name, tbco_account_number, pm_contact_id,
+                                project_name, contractor_company_name, street_address_1,
+                                street_address_2, city, state, postal_code, country,
+                                sales_rep_email, sales_rep_phone, team_code, pm_first_name,
+                                pm_last_name, pm_email, pm_phone, po_number, drive_id,
+                                stage, photo_url
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(tbc_job_number) DO UPDATE SET
+                                site_name = COALESCE(excluded.site_name, projects.site_name),
+                                tbco_account_number = COALESCE(excluded.tbco_account_number, projects.tbco_account_number),
+                                pm_contact_id = COALESCE(excluded.pm_contact_id, projects.pm_contact_id),
+                                project_name = COALESCE(excluded.project_name, projects.project_name),
+                                contractor_company_name = COALESCE(excluded.contractor_company_name, projects.contractor_company_name),
+                                street_address_1 = COALESCE(excluded.street_address_1, projects.street_address_1),
+                                street_address_2 = COALESCE(excluded.street_address_2, projects.street_address_2),
+                                city = COALESCE(excluded.city, projects.city),
+                                state = COALESCE(excluded.state, projects.state),
+                                postal_code = COALESCE(excluded.postal_code, projects.postal_code),
+                                country = COALESCE(excluded.country, projects.country),
+                                sales_rep_email = COALESCE(excluded.sales_rep_email, projects.sales_rep_email),
+                                sales_rep_phone = COALESCE(excluded.sales_rep_phone, projects.sales_rep_phone),
+                                team_code = COALESCE(excluded.team_code, projects.team_code),
+                                pm_first_name = COALESCE(excluded.pm_first_name, projects.pm_first_name),
+                                pm_last_name = COALESCE(excluded.pm_last_name, projects.pm_last_name),
+                                pm_email = COALESCE(excluded.pm_email, projects.pm_email),
+                                pm_phone = COALESCE(excluded.pm_phone, projects.pm_phone),
+                                po_number = COALESCE(excluded.po_number, projects.po_number),
+                                drive_id = COALESCE(excluded.drive_id, projects.drive_id),
+                                stage = COALESCE(excluded.stage, projects.stage),
+                                photo_url = COALESCE(excluded.photo_url, projects.photo_url)
+                        """, (
+                            job_num,
+                            p_dict.get("site_name"),
+                            p_dict.get("tbco_account_number"),
+                            p_dict.get("pm_contact_id"),
+                            p_dict.get("project_name"),
+                            p_dict.get("contractor_company_name"),
+                            p_dict.get("street_address_1"),
+                            p_dict.get("street_address_2"),
+                            p_dict.get("city"),
+                            p_dict.get("state"),
+                            p_dict.get("postal_code"),
+                            p_dict.get("country", "US"),
+                            p_dict.get("sales_rep_email"),
+                            p_dict.get("sales_rep_phone"),
+                            p_dict.get("team_code"),
+                            p_dict.get("pm_first_name"),
+                            p_dict.get("pm_last_name"),
+                            p_dict.get("pm_email"),
+                            p_dict.get("pm_phone"),
+                            p_dict.get("po_number"),
+                            drive_id,
+                            p_dict.get("stage", "Active"),
+                            p_dict.get("photo_url")
+                        ))
+                    conn.commit()
+            except Exception as cloud_err:
+                print(f"Cloud project backfill note: {cloud_err}")
+
+        # Step 2: Query fully hydrated local SQLite database (excluding archived projects)
+        db_rows = []
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
@@ -565,6 +612,7 @@ def main(page: ft.Page):
                         pm_last_name, pm_email, pm_phone, sales_rep_email, sales_rep_phone,
                         team_code, photo_url
                     FROM projects
+                    WHERE stage IS NULL OR stage != 'Archived'
                 """)
                 for row in cursor.fetchall():
                     r_dict = dict(row)
@@ -581,26 +629,6 @@ def main(page: ft.Page):
         except Exception as err:
             print(f"Projects local search query error: {err}")
 
-        # Step 2: Fallback to Firestore stream ONLY if local SQLite yields no records
-        if not db_rows and db is not None:
-            try:
-                projects_stream = db.collection("projects").stream()
-                for doc in projects_stream:
-                    p_dict = doc.to_dict()
-                    p_dict["tbc_job_number"] = doc.id or p_dict.get("tbc_job_number")
-                    
-                    job_num = str(p_dict.get("tbc_job_number", "")).lower()
-                    p_name = str(p_dict.get("project_name", "")).lower()
-                    s_name = str(p_dict.get("site_name", "")).lower()
-                    c_name = str(p_dict.get("contractor_company_name", "")).lower()
-
-                    if not search_query or (search_query in job_num or search_query in p_name or search_query in s_name or search_query in c_name):
-                        if not p_dict.get("drive_id"):
-                            p_dict["drive_id"] = f"FLD-DRIVE-{p_dict.get('tbc_job_number')}"
-                        db_rows.append(p_dict)
-            except Exception as cloud_err:
-                print(f"Cloud project search offline/error: {cloud_err}")
-
         # Step 3: Build card controls from fresh records
         for row in db_rows:
             p_card = build_project_card(
@@ -614,9 +642,87 @@ def main(page: ft.Page):
         
         page.update()
 
+    def unarchive_project(job_num):
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE projects SET stage = 'Active' WHERE tbc_job_number = ?", (job_num,))
+                conn.commit()
+
+            if db is not None:
+                try:
+                    db.collection("projects").document(job_num).set({"stage": "Active"}, merge=True)
+                except Exception as fs_err:
+                    print(f"Firestore unarchive note: {fs_err}")
+
+            show_toast_local(f"Project Job #{job_num} unarchived and restored to Active status!", kind="success")
+            execute_live_search(None)
+            load_archived_projects()
+        except Exception as err:
+            show_toast_local(f"Error unarchiving project: {err}", kind="error")
+
+    def load_archived_projects():
+        archived_projects_list_container.controls.clear()
+        is_grid_mode = projects_view_filter["is_grid"]
+        archived_rows = []
+
+        try:
+            with local_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        tbc_job_number, project_name, site_name, drive_id, stage,
+                        contractor_company_name, tbco_account_number, street_address_1,
+                        street_address_2, city, state, postal_code, country, pm_first_name,
+                        pm_last_name, pm_email, pm_phone, sales_rep_email, sales_rep_phone,
+                        team_code, photo_url
+                    FROM projects
+                    WHERE stage = 'Archived'
+                """)
+                for row in cursor.fetchall():
+                    r_dict = dict(row)
+                    if not r_dict.get("drive_id"):
+                        r_dict["drive_id"] = f"FLD-DRIVE-{r_dict.get('tbc_job_number')}"
+                    archived_rows.append(r_dict)
+        except Exception as err:
+            print(f"Archived projects query error: {err}")
+
+        if not archived_rows:
+            archived_projects_list_container.controls.append(
+                ft.Text("No archived projects found.", size=13, color=FieldFlowLightTheme.TEXT_MUTED)
+            )
+        else:
+            for row in archived_rows:
+                p_card = build_project_card(
+                    project_data=row,
+                    is_grid_mode=is_grid_mode,
+                    on_edit_action=lambda e, r=row: open_edit_project_dialog(r),
+                    on_drive_action=lambda e, d_id=row.get("drive_id", ""): open_drive_local(e, d_id),
+                    on_service_request_action=lambda e, r=row: open_service_request_for_project(r),
+                    on_unarchive_action=lambda e, job=row.get("tbc_job_number"): unarchive_project(job)
+                )
+                archived_projects_list_container.controls.append(p_card)
+
+        page.update()
+
     projects_view = ft.Container(
         content=ft.Column(
             [projects_list_container],
+            scroll=ft.ScrollMode.ALWAYS,
+            expand=True,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH
+        ),
+        padding=16,
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        border_radius=8,
+        border=ft.border.all(1.5, FieldFlowLightTheme.BORDER_PINK_EDGE),
+        shadow=FieldFlowLightTheme.get_card_shadow(),
+        expand=True
+    )
+
+    archived_projects_view = ft.Container(
+        content=ft.Column(
+            [archived_projects_list_container],
             scroll=ft.ScrollMode.ALWAYS,
             expand=True,
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH
@@ -906,7 +1012,7 @@ def main(page: ft.Page):
     master_catalog_view = build_master_data_management_view(
         page=page,
         get_tech_options_fn=get_tech_options,
-        on_success_callback=lambda payload: execute_live_search(None)
+        on_success_callback=lambda payload: [execute_live_search(None), load_archived_projects()]
     )
 
     tab_manager = ft.Tabs(
@@ -914,6 +1020,7 @@ def main(page: ft.Page):
         tabs=[
             ft.Tab(text="Control Tower Cockpit", icon=ft.icons.DASHBOARD, content=side_by_side_cockpit),
             ft.Tab(text="Projects Registry", icon=ft.icons.ASSIGNMENT, content=projects_view),
+            ft.Tab(text="Archived Projects", icon=ft.icons.ARCHIVE, content=archived_projects_view),
             ft.Tab(text="User Management", icon=ft.icons.SUPERVISED_USER_CIRCLE, content=users_management_view),
             ft.Tab(text="Master Catalog", icon=ft.icons.SETTINGS, content=master_catalog_view),
             ft.Tab(text="Audit Trail", icon=ft.icons.RECEIPT_LONG, content=audit_trail_view),
@@ -926,6 +1033,7 @@ def main(page: ft.Page):
     load_live_triage_feed()
     refresh_calendar_fn()
     execute_live_search(None)
+    load_archived_projects()
     refresh_audit_trail_table()
     refresh_users_list()
 
