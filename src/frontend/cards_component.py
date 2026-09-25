@@ -194,11 +194,13 @@ def build_project_card(
     on_edit_action=None,
     on_drive_action=None,
     on_service_request_action=None,
-    on_unarchive_action=None
+    on_unarchive_action=None,
+    on_change_photo_action=None
 ) -> ft.Card:
     """
     Renders a project card container for Projects Registry in Grid or List mode.
-    Directly consumes canonical keys for Contractor, Company PM, and Sales Rep.
+    Consumes canonical keys for Contractor, Company PM, and Sales Rep.
+    Includes explicit camera button overlay for updating Title Block photo.
     """
     if isinstance(project_data, dict):
         job_num = project_data.get("tbc_job_number") or project_data.get("job_number") or "123456XX"
@@ -243,7 +245,6 @@ def build_project_card(
 
     pm_full_name = f"{pm_f} {pm_l}".strip() or "Unassigned PM"
 
-    # Fully normalized payload mapping all canonical field names and key aliases
     prefill_payload = {
         **(project_data if isinstance(project_data, dict) else {}),
         "tbc_job_number": job_num,
@@ -293,17 +294,40 @@ def build_project_card(
         if on_edit_action:
             on_edit_action(prefill_payload)
 
+    def handle_change_photo_click(e):
+        if on_change_photo_action:
+            on_change_photo_action(prefill_payload)
+
     if is_grid_mode:
         img_control = build_project_image_control(photo_url, height=120)
+
+        # Title Block Cover Image Stack with Camera Overlay Button
+        img_stack = ft.Stack(
+            controls=[
+                img_control,
+                ft.Container(
+                    content=ft.IconButton(
+                        icon=ft.icons.CAMERA_ALT,
+                        icon_color="white",
+                        bgcolor="black54",
+                        icon_size=16,
+                        tooltip="Change Title Block Photo",
+                        on_click=handle_change_photo_click
+                    ),
+                    top=4,
+                    right=4
+                )
+            ]
+        )
         
-        # Upper clickable body container (triggers project edit dialog)
+        # Upper clickable body container
         card_body = ft.Container(
             on_click=handle_edit_click,
             ink=True,
             border_radius=6,
             content=ft.Column(
                 [
-                    img_control,
+                    img_stack,
                     ft.Row(
                         [
                             ft.Text(f"Job #{job_num}", size=16, weight=ft.FontWeight.BOLD, font_family="monospace", color=FieldFlowLightTheme.PINK_PRIMARY),
@@ -357,7 +381,6 @@ def build_project_card(
                 )
             )
 
-        # Isolated action bar
         card_actions = ft.Column(
             [
                 ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=8),
@@ -388,14 +411,29 @@ def build_project_card(
         )
     else:
         small_img = ft.Container(
-            content=build_project_image_control(photo_url, height=48),
+            content=ft.Stack(
+                controls=[
+                    build_project_image_control(photo_url, height=48),
+                    ft.Container(
+                        content=ft.IconButton(
+                            icon=ft.icons.CAMERA_ALT,
+                            icon_color="white",
+                            bgcolor="black54",
+                            icon_size=12,
+                            tooltip="Change Cover Photo",
+                            on_click=handle_change_photo_click
+                        ),
+                        top=0,
+                        right=0
+                    )
+                ]
+            ),
             width=70,
             height=48,
             border_radius=4,
             clip_behavior=ft.ClipBehavior.HARD_EDGE
         )
 
-        # Clickable info section container (triggers project edit dialog)
         list_info_section = ft.Container(
             on_click=handle_edit_click,
             ink=True,
@@ -450,7 +488,6 @@ def build_project_card(
                 )
             )
 
-        # Isolated right-aligned action buttons
         list_action_section = ft.Row(
             action_controls,
             spacing=6

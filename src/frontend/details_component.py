@@ -2,7 +2,7 @@
 src/frontend/details_component.py
 Consolidated detail modal views for FieldFlow using standardized key names,
 a tabbed multi-view layout, hybrid local-first (SQLite + Firestore) project tab lookups,
-and automatic Google Drive photo uploads for Project Master Records.
+and Google Drive folder provisioning for Project Cover Photo uploads.
 """
 
 import os
@@ -128,41 +128,47 @@ def build_project_detail_modal(
     edit_pm_email = ft.TextField(label="Project Site Contact Email", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
     edit_pm_phone = ft.TextField(label="Project Site Contact Phone", border_color=FieldFlowLightTheme.BORDER_PINK_EDGE, expand=True)
 
-    staged_photo_path = {"value": ""}
-    staged_documents = []
+    # Decoupled Upload States:
+    # 1. Title Block Cover Photo
+    staged_cover_photo = {"path": "", "is_new": False}
+    # 2. General Drive Attachments/Photos
+    staged_drive_attachments = []
 
-    photo_status_txt = ft.Text("No Custom Picture Selected", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
-    docs_status_txt = ft.Text("No Staged Documents", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
+    cover_photo_status_txt = ft.Text("No Custom Title Photo Selected", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
+    drive_docs_status_txt = ft.Text("No Staged Drive Files", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
 
     # Containers for Dynamic Tabs (Tabs 2, 3, & 4)
     requests_list_view = ft.Column(spacing=8, scroll=ft.ScrollMode.ALWAYS)
     assets_list_view = ft.Column(spacing=8, scroll=ft.ScrollMode.ALWAYS)
     dispatches_list_view = ft.Column(spacing=8, scroll=ft.ScrollMode.ALWAYS)
 
-    def on_photo_picked(e: ft.FilePickerResultEvent):
+    def on_cover_photo_picked(e: ft.FilePickerResultEvent):
         if e.files:
             selected_file = e.files[0]
-            staged_photo_path["value"] = selected_file.path if hasattr(selected_file, 'path') and selected_file.path else selected_file.name
-            photo_status_txt.value = f"Photo Staged: {os.path.basename(staged_photo_path['value'])}"
-            photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
+            f_path = selected_file.path if hasattr(selected_file, 'path') and selected_file.path else selected_file.name
+            staged_cover_photo["path"] = f_path
+            staged_cover_photo["is_new"] = True
+            cover_photo_status_txt.value = f"New Cover Photo Staged: {os.path.basename(f_path)}"
+            cover_photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
             page.update()
 
-    def on_docs_picked(e: ft.FilePickerResultEvent):
+    def on_drive_docs_picked(e: ft.FilePickerResultEvent):
         if e.files:
-            staged_documents.clear()
+            staged_drive_attachments.clear()
             for f in e.files:
-                staged_documents.append(f.path if hasattr(f, 'path') and f.path else f.name)
-            docs_status_txt.value = f"{len(staged_documents)} Document(s) Staged"
-            docs_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
+                f_path = f.path if hasattr(f, 'path') and f.path else f.name
+                staged_drive_attachments.append(f_path)
+            drive_docs_status_txt.value = f"{len(staged_drive_attachments)} File(s) Staged for Drive"
+            drive_docs_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
             page.update()
 
-    photo_picker = ft.FilePicker(on_result=on_photo_picked)
-    docs_picker = ft.FilePicker(on_result=on_docs_picked)
+    cover_photo_picker = ft.FilePicker(on_result=on_cover_photo_picked)
+    drive_docs_picker = ft.FilePicker(on_result=on_drive_docs_picked)
 
-    if photo_picker not in page.overlay:
-        page.overlay.append(photo_picker)
-    if docs_picker not in page.overlay:
-        page.overlay.append(docs_picker)
+    if cover_photo_picker not in page.overlay:
+        page.overlay.append(cover_photo_picker)
+    if drive_docs_picker not in page.overlay:
+        page.overlay.append(drive_docs_picker)
 
     def populate_project_data(proj_data, contractor_options=None, location_options=None, sales_options=None):
         """Populates Vitals form and performs dual lookup (SQLite + Firestore) for Requests, Assets, and Dispatches."""
@@ -215,13 +221,20 @@ def build_project_detail_modal(
         edit_pm_email.value = str(pm_em or "")
         edit_pm_phone.value = str(pm_ph or "")
 
-        staged_photo_path["value"] = photo_val
+        # Reset Decoupled Upload States
+        staged_cover_photo["path"] = photo_val
+        staged_cover_photo["is_new"] = False
+        staged_drive_attachments.clear()
+
         if photo_val:
-            photo_status_txt.value = f"Current Photo: {os.path.basename(photo_val)}"
-            photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
+            cover_photo_status_txt.value = f"Current Title Photo: {os.path.basename(photo_val)}"
+            cover_photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
         else:
-            photo_status_txt.value = "No Custom Picture Selected"
-            photo_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
+            cover_photo_status_txt.value = "No Custom Title Photo Selected"
+            cover_photo_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
+
+        drive_docs_status_txt.value = "No Staged Drive Files"
+        drive_docs_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
 
         # --- Dual Retrieval: Step 1: Local SQLite Query ---
         local_requests = []
@@ -348,7 +361,6 @@ def build_project_detail_modal(
                 ft.Text("No field dispatches scheduled for this job.", size=12, italic=True, color=FieldFlowLightTheme.TEXT_MUTED)
             )
 
-        # UI Refresh
         if page:
             page.update()
 
@@ -378,23 +390,11 @@ def build_project_detail_modal(
         stage_val = edit_stage.value or "In Progress"
         drive_id_val = edit_drive_id.value.strip() if edit_drive_id.value else f"FLD-DRIVE-{job_num}"
 
-        # 1. Cloud-Synced Resolution for Locations and Contractors
         clean_site = resolve_location(site_name, street_1, street_2, city_val, state_val, postal_val, country_val)
         clean_acct = resolve_contractor(company_acct, company_name)
 
-        # Collect all staged local files
-        files_to_upload = []
-        raw_photo_path = staged_photo_path["value"]
-        if raw_photo_path and os.path.exists(raw_photo_path) and os.path.isfile(raw_photo_path):
-            files_to_upload.append(raw_photo_path)
-
-        for doc_p in staged_documents:
-            if doc_p and os.path.exists(doc_p) and os.path.isfile(doc_p) and doc_p not in files_to_upload:
-                files_to_upload.append(doc_p)
-
-        # Step A: Perform Google Drive Upload & Extract Direct Thumbnail Link
-        final_photo_url = raw_photo_path
-        if files_to_upload:
+        # Step A0: Guarantee a valid Google Drive folder exists (Auto-provision if placeholder)
+        if not drive_id_val or drive_id_val.startswith("FLD-"):
             try:
                 from src.backend.drive_service import ensure_project_drive_folder
                 drive_info = ensure_project_drive_folder(
@@ -402,12 +402,38 @@ def build_project_detail_modal(
                     project_name=proj_name,
                     requestor_name=f"{pm_first} {pm_last}".strip() or "FieldFlow User",
                     requestor_email=pm_email or "user@tombarrow.com",
-                    attached_file_paths=files_to_upload
+                    attached_file_paths=[]
                 )
-                if drive_info.get("photo_url"):
-                    final_photo_url = drive_info.get("photo_url")
+                drive_id_val = drive_info.get("drive_id", drive_id_val)
+                edit_drive_id.value = drive_id_val
             except Exception as drive_err:
-                logging.warning(f"Google Drive photo upload note: {drive_err}")
+                logging.warning(f"Google Drive folder auto-provisioning note: {drive_err}")
+
+        # Default: Retain existing title block photo URL
+        final_photo_url = staged_cover_photo["path"] if not staged_cover_photo["is_new"] else ""
+
+        # Step A1: If a NEW cover photo was explicitly chosen, upload it to Drive and retrieve public thumbnail URL
+        if staged_cover_photo["is_new"] and staged_cover_photo["path"] and os.path.exists(staged_cover_photo["path"]):
+            try:
+                from src.backend.drive_service import upload_files_to_drive_folder
+                uploaded = upload_files_to_drive_folder(drive_id_val, [staged_cover_photo["path"]])
+                if uploaded and len(uploaded) > 0 and uploaded[0].get("photo_url"):
+                    final_photo_url = uploaded[0]["photo_url"]
+                else:
+                    final_photo_url = staged_cover_photo["path"]
+            except Exception as drive_err:
+                logging.warning(f"Google Drive title cover photo upload note: {drive_err}")
+                final_photo_url = staged_cover_photo["path"]
+
+        # Step A2: Upload general Drive photos/documents without touching final_photo_url
+        if staged_drive_attachments:
+            try:
+                from src.backend.drive_service import upload_files_to_drive_folder
+                valid_attachments = [p for p in staged_drive_attachments if p and os.path.exists(p)]
+                if valid_attachments:
+                    upload_files_to_drive_folder(drive_id_val, valid_attachments)
+            except Exception as drive_err:
+                logging.warning(f"Google Drive attachments upload note: {drive_err}")
 
         updated_payload = {
             "tbc_job_number": job_num,
@@ -430,18 +456,16 @@ def build_project_detail_modal(
             "photo_url": final_photo_url
         }
 
-        # Step B: Local SQLite Persistence (Flat projects table write)
+        # Step B: Local SQLite Persistence
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # Dynamic Schema Migration Check
                 cursor.execute("PRAGMA table_info(projects);")
                 proj_cols = [row[1] for row in cursor.fetchall()]
                 if "photo_url" not in proj_cols:
                     cursor.execute("ALTER TABLE projects ADD COLUMN photo_url TEXT;")
 
-                # Upsert into CONTACTS table
                 pm_contact_id = None
                 if pm_email:
                     cursor.execute("SELECT contact_id FROM contacts WHERE LOWER(email) = ?", (pm_email,))
@@ -456,7 +480,6 @@ def build_project_detail_modal(
 
                 updated_payload["pm_contact_id"] = pm_contact_id
 
-                # Upsert into PROJECTS master table directly holding all flat fields
                 cursor.execute("""
                     INSERT OR REPLACE INTO projects (
                         tbc_job_number, site_name, tbco_account_number, pm_contact_id, project_name,
@@ -471,7 +494,6 @@ def build_project_detail_modal(
                     drive_id_val, stage_val, final_photo_url
                 ))
 
-                # Sync all matching records in INTAKE_LEDGER table
                 cursor.execute("""
                     UPDATE intake_ledger
                     SET project_name = ?, contractor_company_name = ?, site_name = ?,
@@ -530,17 +552,21 @@ def build_project_detail_modal(
             ft.Row([edit_pm_first_name, edit_pm_last_name], spacing=10),
             ft.Row([edit_pm_email, edit_pm_phone], spacing=10),
 
-            build_section_header("5. Project Media & Attachments", color_token=FieldFlowLightTheme.PRIMARY_GREEN),
+            # Separated Section 5: Title Block Photo vs Drive Files
+            build_section_header("5. Title Block Cover Photo", color_token=FieldFlowLightTheme.PINK_PRIMARY),
             ft.Row([
-                ft.OutlinedButton("Upload Photo", icon=ft.icons.IMAGE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: photo_picker.pick_files(allow_multiple=False)),
-                ft.OutlinedButton("Upload Files", icon=ft.icons.ATTACH_FILE, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: docs_picker.pick_files(allow_multiple=True))
+                ft.OutlinedButton("Change Cover Photo", icon=ft.icons.CAMERA_ALT, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: cover_photo_picker.pick_files(allow_multiple=False, allowed_extensions=["png", "jpg", "jpeg", "webp"])),
+                cover_photo_status_txt
             ], spacing=10),
-            ft.Row([photo_status_txt]),
-            ft.Row([docs_status_txt])
+
+            build_section_header("6. Drive Photos & Attachments", color_token=FieldFlowLightTheme.PRIMARY_GREEN),
+            ft.Row([
+                ft.OutlinedButton("Add Photos/Files to Drive", icon=ft.icons.CLOUD_UPLOAD, style=FieldFlowLightTheme.get_secondary_button_style(), on_click=lambda _: drive_docs_picker.pick_files(allow_multiple=True)),
+                drive_docs_status_txt
+            ], spacing=10)
         ], spacing=10, scroll=ft.ScrollMode.ALWAYS)
     )
 
-    # Multi-Tab Layout Construction
     modal_tabs = ft.Tabs(
         selected_index=0,
         animation_duration=200,
