@@ -2,8 +2,9 @@
 src/frontend/forms_component.py
 Consolidated data entry and intake form module for FieldFlow using standardized key names,
 auto-fill blur handlers, PO # support, Contractor PM labels, Dual-Action Project Creation pipeline,
-full local + cloud asset registration, automatic form resets, and live search prefilling
-for Salesmen, Contractor PMs, and Project Site Contacts.
+full local + cloud asset registration, automatic form resets, live search prefilling
+for Salesmen, Contractor PMs, and Project Site Contacts, file attachment support for service intake,
+and wrapped AlertDialog modal builders.
 """
 
 import os
@@ -78,7 +79,7 @@ def on_contractor_blur_helper(tf_company: ft.TextField, tf_company_acct: ft.Text
 
 
 # =========================================================================
-# 1. PROJECT CREATION FORM COMPONENT
+# 1. PROJECT CREATION FORM COMPONENT & MODAL
 # =========================================================================
 def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.Control:
     """Project Creation Form saving flat project fields directly to SQLite and Firestore."""
@@ -393,6 +394,31 @@ def build_project_creation_form(page: ft.Page, on_success_callback=None) -> ft.C
 
     return form_container
 
+
+def build_project_creation_modal(page: ft.Page, on_success_callback=None) -> tuple[ft.AlertDialog, ft.Control]:
+    """Wraps the Project Creation Form in an ft.AlertDialog modal directly inside forms_component."""
+    project_form_widget = build_project_creation_form(
+        page,
+        on_success_callback=lambda payload: [
+            setattr(direct_project_modal, 'open', False),
+            on_success_callback(payload) if on_success_callback else None
+        ]
+    )
+
+    direct_project_modal = ft.AlertDialog(
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        title=ft.Row([
+            ft.Icon(ft.icons.CREATE_NEW_FOLDER, color=FieldFlowLightTheme.PRIMARY_GREEN, size=26), 
+            ft.Text("Create New Project Folder", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
+        ]),
+        content=ft.Container(content=project_form_widget, width=520, padding=10),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: [setattr(direct_project_modal, 'open', False), page.update()])
+        ]
+    )
+
+    return direct_project_modal, project_form_widget
+
 # =========================================================================
 # 2. ASSET REGISTRATION TOOL COMPONENT
 # =========================================================================
@@ -593,10 +619,10 @@ def build_master_forms(page: ft.Page, get_tech_options_fn=None, on_success_callb
 
 
 # =========================================================================
-# 4. SERVICE TICKET INTAKE FORM COMPONENT
+# 4. SERVICE TICKET INTAKE FORM COMPONENT & MODAL
 # =========================================================================
 def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_success_callback=None, get_tech_options_fn=None) -> ft.Control:
-    """Service Ticket Intake Form featuring dual-stage prefilling for Sales Reps and clean independent Site Contacts."""
+    """Service Ticket Intake Form featuring dual-stage prefilling for Sales Reps, clean independent Site Contacts, and file upload support."""
     tf_job_num = ft.TextField(label="TBCo Job #*", hint_text="e.g. 287027TI", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_proj_name = ft.TextField(label="Project Name*", hint_text="e.g. Tower B Renovation", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
     tf_site_name = ft.TextField(label="Campus / Site Name*", hint_text="e.g. Tampa General Hospital Campus", border_color=FieldFlowLightTheme.ACCENT_BLUE, expand=True)
@@ -623,8 +649,65 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
 
     tf_issue = ft.TextField(label="Issue Description*", multiline=True, min_lines=2, max_lines=4, border_color=FieldFlowLightTheme.ACCENT_BLUE)
 
+    # File Attachment Pickers and State
+    staged_photo_path = {"value": ""}
+    staged_documents = []
+
+    photo_status_txt = ft.Text("No Custom Picture Selected", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
+    docs_status_txt = ft.Text("No Staged Documents", size=11, color=FieldFlowLightTheme.TEXT_MUTED)
+
+    def on_photo_picked(e: ft.FilePickerResultEvent):
+        if e.files:
+            selected_file = e.files[0]
+            file_path = getattr(selected_file, "path", None) or getattr(selected_file, "name", None)
+            if file_path:
+                staged_photo_path["value"] = file_path
+                photo_status_txt.value = f"Photo Staged: {os.path.basename(file_path)}"
+                photo_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
+                if page:
+                    page.update()
+
+    def on_docs_picked(e: ft.FilePickerResultEvent):
+        if e.files:
+            staged_documents.clear()
+            for f in e.files:
+                f_path = getattr(f, "path", None) or getattr(f, "name", None)
+                if f_path:
+                    staged_documents.append(f_path)
+            docs_status_txt.value = f"{len(staged_documents)} Document(s) Staged"
+            docs_status_txt.color = FieldFlowLightTheme.PRIMARY_GREEN
+            if page:
+                page.update()
+
+    photo_picker = ft.FilePicker(on_result=on_photo_picked)
+    docs_picker = ft.FilePicker(on_result=on_docs_picked)
+
+    if photo_picker not in page.overlay:
+        page.overlay.append(photo_picker)
+    if docs_picker not in page.overlay:
+        page.overlay.append(docs_picker)
+
+    if page:
+        page.update()
+
+    btn_upload_photo = ft.OutlinedButton(
+        "Select Photo",
+        icon=ft.icons.IMAGE,
+        style=FieldFlowLightTheme.get_secondary_button_style(),
+        on_click=lambda _: photo_picker.pick_files(
+            allow_multiple=False,
+            allowed_extensions=["png", "jpg", "jpeg", "webp"]
+        )
+    )
+    btn_upload_docs = ft.OutlinedButton(
+        "Upload Documents",
+        icon=ft.icons.ATTACH_FILE,
+        style=FieldFlowLightTheme.get_secondary_button_style(),
+        on_click=lambda _: docs_picker.pick_files(allow_multiple=True)
+    )
+
     def clear_form(e=None):
-        """Resets all intake form input controls to blank values."""
+        """Resets all intake form input controls and staged files to blank values."""
         tf_job_num.value = ""
         tf_proj_name.value = ""
         tf_site_name.value = ""
@@ -647,6 +730,15 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
         tf_contact_phone.value = ""
 
         tf_issue.value = ""
+
+        staged_photo_path["value"] = ""
+        staged_documents.clear()
+
+        photo_status_txt.value = "No Custom Picture Selected"
+        photo_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
+        docs_status_txt.value = "No Staged Documents"
+        docs_status_txt.color = FieldFlowLightTheme.TEXT_MUTED
+
         if page:
             page.update()
 
@@ -800,6 +892,8 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
             "project_site_contact_email": tf_contact_email.value.strip().lower(),
             "project_site_contact_phone": tf_contact_phone.value.strip(),
             "issue_description": tf_issue.value.strip(),
+            "photo_url": staged_photo_path["value"],
+            "attached_files": staged_documents,
             "triage_status": "Unassigned",
             "submission_timestamp": datetime.now().isoformat()
         }
@@ -861,7 +955,10 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
 
             ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
             tf_issue,
-            ft.ElevatedButton("Submit Service Request", style=FieldFlowLightTheme.get_primary_button_style(), on_click=submit_service_request)
+
+            ft.Divider(color=FieldFlowLightTheme.BORDER_PINK_EDGE, height=10),
+            ft.Row([btn_upload_photo, photo_status_txt], spacing=10),
+            ft.Row([btn_upload_docs, docs_status_txt], spacing=10)
         ], spacing=10, scroll=ft.ScrollMode.AUTO, tight=True),
         padding=10
     )
@@ -870,3 +967,30 @@ def build_service_intake_form(page: ft.Page, trigger_date_picker_fn=None, on_suc
     form_layout.populate_data = populate_data
     form_layout.submit_form = submit_service_request
     return form_layout
+
+
+def build_service_intake_modal(page: ft.Page, get_tech_options_fn=None, on_success_callback=None) -> tuple[ft.AlertDialog, ft.Control]:
+    """Wraps the Service Ticket Intake Form in an ft.AlertDialog modal directly inside forms_component."""
+    intake_form_widget = build_service_intake_form(
+        page,
+        get_tech_options_fn=get_tech_options_fn,
+        on_success_callback=lambda payload: [
+            setattr(intake_modal, 'open', False),
+            on_success_callback(payload) if on_success_callback else None
+        ]
+    )
+
+    intake_modal = ft.AlertDialog(
+        bgcolor=FieldFlowLightTheme.SURFACE_CARD,
+        title=ft.Row([
+            ft.Icon(ft.icons.POST_ADD, color=FieldFlowLightTheme.PINK_PRIMARY, size=26), 
+            ft.Text("New Service Request Intake", size=18, weight=ft.FontWeight.BOLD, color=FieldFlowLightTheme.TEXT_PRIMARY)
+        ]),
+        content=ft.Container(content=intake_form_widget, width=760, height=540, padding=0),
+        actions=[
+            ft.TextButton("Cancel", on_click=lambda _: [setattr(intake_modal, 'open', False), page.update()]),
+            ft.ElevatedButton("Create Service Request", style=FieldFlowLightTheme.get_primary_button_style(), on_click=lambda e: intake_form_widget.submit_form(e) if hasattr(intake_form_widget, 'submit_form') else None)
+        ]
+    )
+
+    return intake_modal, intake_form_widget
