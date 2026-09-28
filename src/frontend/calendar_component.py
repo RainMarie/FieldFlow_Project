@@ -2,6 +2,7 @@
 src/frontend/calendar_component.py
 Modular interactive calendar component supporting Month, Agenda, and Technician views.
 Integrates local SQLite, cloud Firestore, and live Google Calendar API events.
+Updated to query site locations via location_id foreign key joins.
 """
 
 import calendar
@@ -77,14 +78,23 @@ def build_calendar_widget(page: ft.Page, on_ticket_select_callback):
         rows = []
         seen_job_ids = set()
 
-        # Fetch SQLite dispatches (Instant local memory read)
+        # Fetch SQLite dispatches using relational joins to locations
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT d.job_id, d.tbc_job_number, d.technician_email, d.scheduled_time, d.status, d.job_type, p.site_name
+                    SELECT 
+                        d.job_id, 
+                        d.tbc_job_number, 
+                        d.technician_email, 
+                        d.scheduled_time, 
+                        d.status, 
+                        d.job_type, 
+                        l.site_name
                     FROM dispatches d
                     LEFT JOIN projects p ON d.tbc_job_number = p.tbc_job_number
+                    LEFT JOIN intake_ledger i ON d.request_id = i.request_id
+                    LEFT JOIN locations l ON COALESCE(i.location_id, p.location_id) = l.location_id
                     WHERE d.status IN ('Scheduled', 'Traveling', 'Traveling (Return)', 'In Progress', 'Pending')
                     ORDER BY d.scheduled_time ASC
                 """)

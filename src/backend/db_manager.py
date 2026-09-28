@@ -2,6 +2,7 @@
 src/backend/db_manager.py
 Database Manager providing Local-First SQLite storage with asynchronous
 Cloud Firestore synchronization via sync_engine.
+Rebuilt strictly according to the FieldFlow Matrix Schema.
 """
 
 import os
@@ -101,7 +102,7 @@ class WebSafeCredentialManager:
 
 
 class LocalDatabaseManager:
-    """Manages the local SQLite relational layer in WAL mode across normalized schemas."""
+    """Manages the local SQLite relational layer in WAL mode strictly following FieldFlow Matrix Schema."""
     def __init__(self, db_path: str = "tbc_local.db"):
         self.db_path = os.path.join(CURRENT_DIR, db_path)
         self.init_sqlite_schema()
@@ -114,48 +115,35 @@ class LocalDatabaseManager:
         return conn
 
     def init_sqlite_schema(self):
-        """Initializes all normalized and flattened schemas sequentially."""
+        """Initializes all 16 normalized relational schemas strictly per the FieldFlow Matrix Schema."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON;")
 
-            # 9. INTAKE LEDGER (Matches Cloud Firestore intake_ledger 1-to-1)
+            # 1. LOCATIONS
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS intake_ledger (
-                    request_id TEXT PRIMARY KEY,
-                    tbc_job_number TEXT,
-                    team_code TEXT,
+                CREATE TABLE IF NOT EXISTS locations (
+                    location_id TEXT PRIMARY KEY,
                     site_name TEXT,
-                    project_name TEXT,
-                    contractor_company_name TEXT,
                     street_address_1 TEXT,
                     street_address_2 TEXT,
                     city TEXT,
                     state TEXT,
                     postal_code TEXT,
                     country TEXT DEFAULT 'US',
-                    sales_rep_email TEXT,
-                    sales_rep_phone TEXT,
-                    project_site_contact_first_name TEXT,
-                    project_site_contact_last_name TEXT,
-                    project_site_contact_email TEXT,
-                    project_site_contact_phone TEXT,
-                    issue_description TEXT,
-                    triage_status TEXT DEFAULT 'Unassigned',
-                    request_type TEXT,
-                    submission_timestamp TEXT NOT NULL,
-                    photo_url TEXT,
-                    FOREIGN KEY(tbc_job_number) REFERENCES projects(tbc_job_number) ON DELETE SET NULL,
-                    FOREIGN KEY(site_name) REFERENCES locations(site_name) ON DELETE SET NULL,
-                    FOREIGN KEY(sales_rep_email) REFERENCES users(user_email) ON DELETE SET NULL
+                    site_contact_id TEXT,
+                    FOREIGN KEY(site_contact_id) REFERENCES contacts(contact_id) ON DELETE SET NULL
                 );
             """)
 
-            # Dynamic Migration Check for intake_ledger table
-            cursor.execute("PRAGMA table_info(intake_ledger);")
-            existing_intake_cols = [row[1] for row in cursor.fetchall()]
-            if "photo_url" not in existing_intake_cols:
-                cursor.execute("ALTER TABLE intake_ledger ADD COLUMN photo_url TEXT;")
+            # 2. CONTRACTORS
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS contractors (
+                    tbco_account_number TEXT PRIMARY KEY,
+                    company_name TEXT NOT NULL,
+                    trade_specialty TEXT
+                );
+            """)
 
             # 3. USERS
             cursor.execute("""
@@ -213,82 +201,46 @@ class LocalDatabaseManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS parts_master (
                     sku TEXT PRIMARY KEY,
-                    manufacturer TEXT,
+                    manufacturer_id TEXT,
                     part_description TEXT NOT NULL,
-                    unit_cost REAL DEFAULT 0.0
+                    unit_cost REAL DEFAULT 0.0,
+                    FOREIGN KEY(manufacturer_id) REFERENCES manufacturers(manufacturer_id) ON DELETE SET NULL
                 );
             """)
 
-            # 8. PROJECTS (Flattened to match Cloud Firestore 1-to-1 without joins or aliases)
+            # 8. PROJECTS
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     tbc_job_number TEXT PRIMARY KEY,
-                    site_name TEXT,
+                    location_id TEXT,
                     tbco_account_number TEXT,
                     pm_contact_id TEXT,
                     project_name TEXT,
-                    contractor_company_name TEXT,
-                    street_address_1 TEXT,
-                    street_address_2 TEXT,
-                    city TEXT,
-                    state TEXT,
-                    postal_code TEXT,
-                    country TEXT DEFAULT 'US',
-                    sales_rep_email TEXT,
-                    sales_rep_phone TEXT,
-                    team_code TEXT,
-                    pm_first_name TEXT,
-                    pm_last_name TEXT,
-                    pm_email TEXT,
-                    pm_phone TEXT,
-                    po_number TEXT,
                     drive_id TEXT,
                     stage TEXT DEFAULT 'Active',
-                    photo_url TEXT
+                    FOREIGN KEY(location_id) REFERENCES locations(location_id) ON DELETE SET NULL,
+                    FOREIGN KEY(tbco_account_number) REFERENCES contractors(tbco_account_number) ON DELETE SET NULL,
+                    FOREIGN KEY(pm_contact_id) REFERENCES contacts(contact_id) ON DELETE SET NULL
                 );
             """)
 
-            # Dynamic Migration Checks for Existing Database File
-            cursor.execute("PRAGMA table_info(projects);")
-            existing_cols = [row[1] for row in cursor.fetchall()]
-            new_project_fields = [
-                "contractor_company_name", "street_address_1", "street_address_2", "city",
-                "state", "postal_code", "country", "sales_rep_email", "sales_rep_phone",
-                "team_code", "pm_first_name", "pm_last_name", "pm_email", "pm_phone",
-                "po_number", "photo_url"
-            ]
-            for col_name in new_project_fields:
-                if col_name not in existing_cols:
-                    cursor.execute(f"ALTER TABLE projects ADD COLUMN {col_name} TEXT;")
-
-            # 9. INTAKE LEDGER (Matches Cloud Firestore intake_ledger 1-to-1)
+            # 9. INTAKE LEDGER
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS intake_ledger (
                     request_id TEXT PRIMARY KEY,
                     tbc_job_number TEXT,
                     team_code TEXT,
-                    site_name TEXT,
-                    project_name TEXT,
-                    contractor_company_name TEXT,
-                    street_address_1 TEXT,
-                    street_address_2 TEXT,
-                    city TEXT,
-                    state TEXT,
-                    postal_code TEXT,
-                    country TEXT DEFAULT 'US',
+                    location_id TEXT,
                     sales_rep_email TEXT,
-                    sales_rep_phone TEXT,
-                    project_site_contact_first_name TEXT,
-                    project_site_contact_last_name TEXT,
-                    project_site_contact_email TEXT,
-                    project_site_contact_phone TEXT,
+                    site_contact_id TEXT,
                     issue_description TEXT,
                     triage_status TEXT DEFAULT 'Unassigned',
                     request_type TEXT,
                     submission_timestamp TEXT NOT NULL,
                     FOREIGN KEY(tbc_job_number) REFERENCES projects(tbc_job_number) ON DELETE SET NULL,
-                    FOREIGN KEY(site_name) REFERENCES locations(site_name) ON DELETE SET NULL,
-                    FOREIGN KEY(sales_rep_email) REFERENCES users(user_email) ON DELETE SET NULL
+                    FOREIGN KEY(location_id) REFERENCES locations(location_id) ON DELETE SET NULL,
+                    FOREIGN KEY(sales_rep_email) REFERENCES users(user_email) ON DELETE SET NULL,
+                    FOREIGN KEY(site_contact_id) REFERENCES contacts(contact_id) ON DELETE SET NULL
                 );
             """)
 
@@ -296,18 +248,18 @@ class LocalDatabaseManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS dispatches (
                     job_id TEXT PRIMARY KEY,
+                    request_id TEXT,
                     tbc_job_number TEXT NOT NULL,
                     technician_email TEXT,
-                    sales_rep_email TEXT,
                     scheduled_time TEXT,
                     status TEXT DEFAULT 'Scheduled',
                     job_type TEXT,
                     google_calendar_event_id TEXT,
                     last_mutation_token TEXT,
                     report_metrics TEXT,
+                    FOREIGN KEY(request_id) REFERENCES intake_ledger(request_id) ON DELETE SET NULL,
                     FOREIGN KEY(tbc_job_number) REFERENCES projects(tbc_job_number) ON DELETE CASCADE,
-                    FOREIGN KEY(technician_email) REFERENCES users(user_email) ON DELETE SET NULL,
-                    FOREIGN KEY(sales_rep_email) REFERENCES users(user_email) ON DELETE SET NULL
+                    FOREIGN KEY(technician_email) REFERENCES users(user_email) ON DELETE SET NULL
                 );
             """)
 
@@ -316,7 +268,7 @@ class LocalDatabaseManager:
                 CREATE TABLE IF NOT EXISTS assets (
                     asset_id TEXT PRIMARY KEY,
                     tbc_job_number TEXT,
-                    site_name TEXT NOT NULL,
+                    location_id TEXT NOT NULL,
                     manufacturer_id TEXT,
                     model_number TEXT,
                     serial_number TEXT,
@@ -325,7 +277,7 @@ class LocalDatabaseManager:
                     warranty_expiration_date TEXT,
                     operational_status TEXT DEFAULT 'Operational',
                     FOREIGN KEY(tbc_job_number) REFERENCES projects(tbc_job_number) ON DELETE SET NULL,
-                    FOREIGN KEY(site_name) REFERENCES locations(site_name) ON UPDATE CASCADE ON DELETE CASCADE,
+                    FOREIGN KEY(location_id) REFERENCES locations(location_id) ON UPDATE CASCADE ON DELETE CASCADE,
                     FOREIGN KEY(manufacturer_id) REFERENCES manufacturers(manufacturer_id) ON DELETE SET NULL
                 );
             """)
@@ -401,15 +353,15 @@ class LocalDatabaseManager:
                 );
             """)
 
-            # Performance Indexes
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_loc_site ON locations(site_name);")
+            # Indexes for Optimization
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_loc_id ON locations(location_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_contractors_acct ON contractors(tbco_account_number);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_assets_tag ON assets(equipment_tag);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_assets_sn ON assets(serial_number);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_parts_sku ON parts_master(sku);")
 
             conn.commit()
-        logging.info("Local SQLite Database Engine initialized across normalized and flattened schemas.")
+        logging.info("Local SQLite Database Engine reinitialized strictly matching FieldFlow Matrix Schema.")
 
 
 cred_manager = WebSafeCredentialManager()
@@ -444,41 +396,58 @@ def resolve_location(
     city: Optional[str] = None,
     state: Optional[str] = None,
     postal_code: Optional[str] = None,
-    country: str = "US"
+    country: str = "US",
+    site_contact_id: Optional[str] = None
 ) -> str:
+    """Resolves or inserts a location record into SQLite and Cloud Firestore."""
     clean_site = site_name.strip()
+    
+    location_id = None
+    with local_db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT location_id FROM locations WHERE LOWER(site_name) = LOWER(?)", (clean_site,))
+        row = cursor.fetchone()
+        if row:
+            location_id = row["location_id"]
+
+    if not location_id:
+        location_id = f"LOC-{uuid.uuid4().hex[:8].upper()}"
+
     payload = {
+        "location_id": location_id,
         "site_name": clean_site,
         "street_address_1": street_address_1,
         "street_address_2": street_address_2,
         "city": city,
         "state": state,
         "postal_code": postal_code,
-        "country": country
+        "country": country,
+        "site_contact_id": site_contact_id
     }
 
     if db is not None:
         try:
-            db.collection("locations").document(clean_site).set(payload, merge=True)
+            db.collection("locations").document(location_id).set(payload, merge=True)
         except Exception as err:
             logging.warning(f"Cloud location resolve note: {err}")
 
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT site_name FROM locations WHERE LOWER(site_name) = LOWER(?)", (clean_site,))
+        cursor.execute("SELECT location_id FROM locations WHERE location_id = ?", (location_id,))
         row = cursor.fetchone()
         if row:
-            return row["site_name"]
+            return row["location_id"]
         
         cursor.execute("""
-            INSERT INTO locations (site_name, street_address_1, street_address_2, city, state, postal_code, country)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (clean_site, street_address_1, street_address_2, city, state, postal_code, country))
+            INSERT INTO locations (location_id, site_name, street_address_1, street_address_2, city, state, postal_code, country, site_contact_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (location_id, clean_site, street_address_1, street_address_2, city, state, postal_code, country, site_contact_id))
         conn.commit()
-        return clean_site
+        return location_id
 
 
 def resolve_contractor(tbco_account_number: str, company_name: str, trade_specialty: Optional[str] = None) -> str:
+    """Resolves or inserts a contractor record into SQLite and Cloud Firestore."""
     clean_acct = tbco_account_number.strip().upper()
     clean_name = company_name.strip()
     payload = {
@@ -515,6 +484,7 @@ def resolve_sales_user(
     user_phone: Optional[str] = None,
     branch_city: Optional[str] = None
 ) -> str:
+    """Resolves or inserts a sales user record into SQLite and Cloud Firestore."""
     clean_email = user_email.strip().lower()
 
     f_name = (first_name or "").strip()
@@ -572,6 +542,7 @@ def resolve_pm_contact(
     phone: Optional[str] = None,
     title: str = "Project Manager"
 ) -> str:
+    """Resolves or inserts a PM contact record into SQLite and Cloud Firestore."""
     clean_email = email.strip().lower()
     clean_acct = tbco_account_number.strip().upper()
 
@@ -632,25 +603,25 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
             user_phone=form_data.get("sales_rep_phone", "")
         )
 
+    location_id = form_data.get("location_id")
+    if not location_id and form_data.get("site_name"):
+        location_id = resolve_location(
+            site_name=form_data.get("site_name"),
+            street_address_1=form_data.get("street_address_1"),
+            street_address_2=form_data.get("street_address_2"),
+            city=form_data.get("city"),
+            state=form_data.get("state"),
+            postal_code=form_data.get("postal_code"),
+            country=form_data.get("country", "US")
+        )
+
     standardized_payload = {
         "request_id": req_id,
         "tbc_job_number": job_no,
         "team_code": form_data.get("team_code", ""),
-        "site_name": form_data.get("site_name", "Default Campus"),
-        "project_name": form_data.get("project_name", "Default Project"),
-        "contractor_company_name": form_data.get("contractor_company_name", "Default Contractor"),
-        "street_address_1": form_data.get("street_address_1", ""),
-        "street_address_2": form_data.get("street_address_2", ""),
-        "city": form_data.get("city", ""),
-        "state": form_data.get("state", ""),
-        "postal_code": form_data.get("postal_code", ""),
-        "country": form_data.get("country", "US"),
+        "location_id": location_id,
         "sales_rep_email": sales_email,
-        "sales_rep_phone": form_data.get("sales_rep_phone", ""),
-        "project_site_contact_first_name": form_data.get("project_site_contact_first_name", ""),
-        "project_site_contact_last_name": form_data.get("project_site_contact_last_name", ""),
-        "project_site_contact_email": form_data.get("project_site_contact_email", ""),
-        "project_site_contact_phone": form_data.get("project_site_contact_phone", ""),
+        "site_contact_id": form_data.get("site_contact_id"),
         "issue_description": form_data.get("issue_description", ""),
         "triage_status": form_data.get("triage_status", "Unassigned"),
         "request_type": form_data.get("request_type", "VFD Startup"),
@@ -663,13 +634,9 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
 
         cursor.execute("""
             INSERT OR REPLACE INTO intake_ledger (
-                request_id, tbc_job_number, team_code, site_name, project_name,
-                contractor_company_name, street_address_1, street_address_2, city, state,
-                postal_code, country, sales_rep_email, sales_rep_phone,
-                project_site_contact_first_name, project_site_contact_last_name,
-                project_site_contact_email, project_site_contact_phone, issue_description,
-                triage_status, request_type, submission_timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                request_id, tbc_job_number, team_code, location_id, sales_rep_email,
+                site_contact_id, issue_description, triage_status, request_type, submission_timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, tuple(standardized_payload.values()))
 
         conn.commit()
@@ -678,7 +645,7 @@ def process_service_intake_transaction(form_data: Dict[str, Any]) -> str:
     return req_id
 
 
-def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_time: str, job_type: str) -> Dict[str, Any]:
+def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_time: str, job_type: str, request_id: Optional[str] = None) -> Dict[str, Any]:
     """Creates a dispatch record locally first, then triggers cloud sync in background."""
     with local_db.get_connection() as conn:
         cursor = conn.cursor()
@@ -689,13 +656,14 @@ def create_job_dispatch(tbc_job_number: str, technician_email: str, scheduled_ti
         job_id = f"JOB-{uuid.uuid4().hex[:8].upper()}"
         
         cursor.execute("""
-            INSERT INTO dispatches (job_id, tbc_job_number, technician_email, sales_rep_email, scheduled_time, status, job_type)
+            INSERT INTO dispatches (job_id, request_id, tbc_job_number, technician_email, scheduled_time, status, job_type)
             VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
-        """, (job_id, tbc_job_number, technician_email, sales_rep, scheduled_time, job_type))
+        """, (job_id, request_id, tbc_job_number, technician_email, scheduled_time, job_type))
         conn.commit()
 
         dispatch_payload = {
             "job_id": job_id,
+            "request_id": request_id,
             "tbc_job_number": tbc_job_number,
             "technician_email": technician_email,
             "sales_rep_email": sales_rep,

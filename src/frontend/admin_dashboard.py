@@ -2,7 +2,7 @@
 src/frontend/admin_dashboard.py
 Control Tower Admin Dashboard integrating side-by-side cockpit, Projects Registry,
 User Management, Master Catalog, and Audit Trail tabs with full FieldFlowLightTheme styling.
-Queries projects table directly with automated Cloud Firestore to local SQLite backfill sync.
+Queries normalized SQLite schema directly with automated Cloud Firestore fallback sync.
 """
 
 import os
@@ -138,11 +138,12 @@ def main(page: ft.Page):
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT site_name, street_address_1 FROM locations ORDER BY site_name ASC")
+                cursor.execute("SELECT location_id, site_name, street_address_1 FROM locations ORDER BY site_name ASC")
                 for row in cursor.fetchall():
-                    s_name = row["site_name"]
+                    loc_id = row["location_id"]
+                    s_name = row["site_name"] or "Unnamed Site"
                     s_addr = row["street_address_1"] or ""
-                    options.append(ft.dropdown.Option(key=s_name, text=f"{s_name} - {s_addr}".strip(" -")))
+                    options.append(ft.dropdown.Option(key=loc_id, text=f"{s_name} - {s_addr}".strip(" -")))
         except Exception as err:
             print(f"Error fetching locations: {err}")
         return options
@@ -166,12 +167,49 @@ def main(page: ft.Page):
         triage_cards_container.controls.clear()
         pending_records = []
 
+        # Layer A: Local SQLite Query Joining Normalized Tables via Foreign Keys
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT i.*, u.first_name AS sales_first_name, u.last_name AS sales_last_name
+                    SELECT 
+                        i.request_id,
+                        i.tbc_job_number,
+                        i.team_code,
+                        i.location_id,
+                        i.sales_rep_email,
+                        i.site_contact_id,
+                        i.issue_description,
+                        i.triage_status,
+                        i.request_type,
+                        i.submission_timestamp,
+
+                        p.project_name,
+
+                        l.site_name,
+                        l.street_address_1,
+                        l.street_address_2,
+                        l.city,
+                        l.state,
+                        l.postal_code,
+                        l.country,
+
+                        site_cnt.first_name AS project_site_contact_first_name,
+                        site_cnt.last_name AS project_site_contact_last_name,
+                        site_cnt.email AS project_site_contact_email,
+                        site_cnt.phone AS project_site_contact_phone,
+
+                        c.company_name AS contractor_company_name,
+
+                        u.first_name AS sales_first_name,
+                        u.last_name AS sales_last_name,
+                        u.user_phone AS sales_rep_phone
+
                     FROM intake_ledger i
+                    LEFT JOIN projects p ON i.tbc_job_number = p.tbc_job_number
+                    LEFT JOIN locations l ON COALESCE(i.location_id, p.location_id) = l.location_id
+                    LEFT JOIN contacts site_cnt ON COALESCE(i.site_contact_id, l.site_contact_id) = site_cnt.contact_id
+                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
                     LEFT JOIN users u ON i.sales_rep_email = u.user_email
                     WHERE i.triage_status IN ('Unassigned', 'PENDING_TRIAGE', 'Pending')
                     ORDER BY i.submission_timestamp DESC
@@ -183,13 +221,63 @@ def main(page: ft.Page):
         except Exception as err:
             print(f"Local triage query note: {err}")
 
+        # Layer B: Cloud Firestore Fallback Document Lookups by Foreign Key IDs
         if not pending_records and db is not None:
             try:
-                query = db.collection("intake_ledger").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE"])).stream()
+                query = db.collection("intake_ledger").where(filter=FieldFilter("triage_status", "in", ["Unassigned", "PENDING_TRIAGE", "Pending"])).stream()
                 for doc in query:
                     record = doc.to_dict()
                     record["request_id"] = doc.id
                     job_num = record.get("tbc_job_number")
+                    loc_id = record.get("location_id")
+                    site_cnt_id = record.get("site_contact_id")
+                    sales_email = record.get("sales_rep_email")
+
+                    if job_num:
+                        try:
+                            p_doc = db.collection("projects").document(job_num).get()
+                            if p_doc.exists:
+                                p_data = p_doc.to_dict()
+                                record["project_name"] = p_data.get("project_name") or record.get("project_name")
+                                loc_id = loc_id or p_data.get("location_id")
+                                acct_num = p_data.get("tbco_account_number")
+                        except Exception as pe:
+                            print(f"Cloud project lookup note: {pe}")
+
+                    if loc_id:
+                        try:
+                            l_doc = db.collection("locations").document(loc_id).get()
+                            if l_doc.exists:
+                                l_data = l_doc.to_dict()
+                                record["site_name"] = l_data.get("site_name")
+                                for k in ["street_address_1", "street_address_2", "city", "state", "postal_code", "country"]:
+                                    record[k] = l_data.get(k, "")
+                                site_cnt_id = site_cnt_id or l_data.get("site_contact_id")
+                        except Exception as le:
+                            print(f"Cloud location lookup note: {le}")
+
+                    if site_cnt_id:
+                        try:
+                            cnt_doc = db.collection("contacts").document(site_cnt_id).get()
+                            if cnt_doc.exists:
+                                c_data = cnt_doc.to_dict()
+                                record["project_site_contact_first_name"] = c_data.get("first_name", "")
+                                record["project_site_contact_last_name"] = c_data.get("last_name", "")
+                                record["project_site_contact_email"] = c_data.get("email", "")
+                                record["project_site_contact_phone"] = c_data.get("phone", "")
+                        except Exception as ce:
+                            print(f"Cloud contact lookup note: {ce}")
+
+                    if sales_email:
+                        try:
+                            u_doc = db.collection("users").document(sales_email).get()
+                            if u_doc.exists:
+                                u_data = u_doc.to_dict()
+                                record["sales_first_name"] = u_data.get("first_name", "")
+                                record["sales_last_name"] = u_data.get("last_name", "")
+                        except Exception as ue:
+                            print(f"Cloud user lookup note: {ue}")
+
                     if not record.get("drive_id"):
                         record["drive_id"] = f"FLD-GDRV-{job_num or 'NEW'}"
                     pending_records.append(record)
@@ -358,9 +446,9 @@ def main(page: ft.Page):
                 """, (job_num, req_id))
 
                 cursor.execute("""
-                    INSERT OR REPLACE INTO dispatches (job_id, tbc_job_number, technician_email, scheduled_time, status, job_type)
-                    VALUES (?, ?, ?, ?, 'Scheduled', ?)
-                """, (job_id, job_num, selected_tech, scheduled_date, job_type))
+                    INSERT OR REPLACE INTO dispatches (job_id, request_id, tbc_job_number, technician_email, scheduled_time, status, job_type)
+                    VALUES (?, ?, ?, ?, ?, 'Scheduled', ?)
+                """, (job_id, req_id, job_num, selected_tech, scheduled_date, job_type))
 
                 cursor.execute("SELECT * FROM intake_ledger WHERE request_id = ?", (req_id,))
                 full_row = cursor.fetchone()
@@ -374,14 +462,14 @@ def main(page: ft.Page):
 
             dispatch_payload = {
                 "job_id": job_id,
+                "request_id": req_id,
                 "tbc_job_number": job_num,
                 "technician_email": selected_tech,
                 "sales_rep_email": full_dict.get("sales_rep_email", "sales1@tombarrow.com"),
                 "scheduled_time": scheduled_date,
                 "status": "Scheduled",
                 "job_type": job_type,
-                "tbco_account_number": full_dict.get("tbco_account_number", ""),
-                "site_name": full_dict.get("site_name", "")
+                "location_id": full_dict.get("location_id", "")
             }
             sync_engine.dispatch_sync_in_background(db, dispatch_payload)
 
@@ -540,79 +628,45 @@ def main(page: ft.Page):
 
                         cursor.execute("""
                             INSERT INTO projects (
-                                tbc_job_number, site_name, tbco_account_number, pm_contact_id,
-                                project_name, contractor_company_name, street_address_1,
-                                street_address_2, city, state, postal_code, country,
-                                sales_rep_email, sales_rep_phone, team_code, pm_first_name,
-                                pm_last_name, pm_email, pm_phone, po_number, drive_id,
-                                stage, photo_url
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                tbc_job_number, location_id, tbco_account_number, pm_contact_id,
+                                project_name, drive_id, stage
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(tbc_job_number) DO UPDATE SET
-                                site_name = COALESCE(excluded.site_name, projects.site_name),
+                                location_id = COALESCE(excluded.location_id, projects.location_id),
                                 tbco_account_number = COALESCE(excluded.tbco_account_number, projects.tbco_account_number),
                                 pm_contact_id = COALESCE(excluded.pm_contact_id, projects.pm_contact_id),
                                 project_name = COALESCE(excluded.project_name, projects.project_name),
-                                contractor_company_name = COALESCE(excluded.contractor_company_name, projects.contractor_company_name),
-                                street_address_1 = COALESCE(excluded.street_address_1, projects.street_address_1),
-                                street_address_2 = COALESCE(excluded.street_address_2, projects.street_address_2),
-                                city = COALESCE(excluded.city, projects.city),
-                                state = COALESCE(excluded.state, projects.state),
-                                postal_code = COALESCE(excluded.postal_code, projects.postal_code),
-                                country = COALESCE(excluded.country, projects.country),
-                                sales_rep_email = COALESCE(excluded.sales_rep_email, projects.sales_rep_email),
-                                sales_rep_phone = COALESCE(excluded.sales_rep_phone, projects.sales_rep_phone),
-                                team_code = COALESCE(excluded.team_code, projects.team_code),
-                                pm_first_name = COALESCE(excluded.pm_first_name, projects.pm_first_name),
-                                pm_last_name = COALESCE(excluded.pm_last_name, projects.pm_last_name),
-                                pm_email = COALESCE(excluded.pm_email, projects.pm_email),
-                                pm_phone = COALESCE(excluded.pm_phone, projects.pm_phone),
-                                po_number = COALESCE(excluded.po_number, projects.po_number),
                                 drive_id = COALESCE(excluded.drive_id, projects.drive_id),
-                                stage = COALESCE(excluded.stage, projects.stage),
-                                photo_url = COALESCE(excluded.photo_url, projects.photo_url)
+                                stage = COALESCE(excluded.stage, projects.stage)
                         """, (
                             job_num,
-                            p_dict.get("site_name"),
+                            p_dict.get("location_id"),
                             p_dict.get("tbco_account_number"),
                             p_dict.get("pm_contact_id"),
                             p_dict.get("project_name"),
-                            p_dict.get("contractor_company_name"),
-                            p_dict.get("street_address_1"),
-                            p_dict.get("street_address_2"),
-                            p_dict.get("city"),
-                            p_dict.get("state"),
-                            p_dict.get("postal_code"),
-                            p_dict.get("country", "US"),
-                            p_dict.get("sales_rep_email"),
-                            p_dict.get("sales_rep_phone"),
-                            p_dict.get("team_code"),
-                            p_dict.get("pm_first_name"),
-                            p_dict.get("pm_last_name"),
-                            p_dict.get("pm_email"),
-                            p_dict.get("pm_phone"),
-                            p_dict.get("po_number"),
                             drive_id,
-                            p_dict.get("stage", "Active"),
-                            p_dict.get("photo_url")
+                            p_dict.get("stage", "Active")
                         ))
                     conn.commit()
             except Exception as cloud_err:
                 print(f"Cloud project backfill note: {cloud_err}")
 
-        # Step 2: Query fully hydrated local SQLite database (excluding archived projects)
+        # Step 2: Query fully hydrated local SQLite database (joining locations & contractors)
         db_rows = []
         try:
             with local_db.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT 
-                        tbc_job_number, project_name, site_name, drive_id, stage,
-                        contractor_company_name, tbco_account_number, street_address_1,
-                        street_address_2, city, state, postal_code, country, pm_first_name,
-                        pm_last_name, pm_email, pm_phone, sales_rep_email, sales_rep_phone,
-                        team_code, photo_url
-                    FROM projects
-                    WHERE stage IS NULL OR stage != 'Archived'
+                        p.tbc_job_number, p.project_name, p.drive_id, p.stage, p.location_id, p.tbco_account_number,
+                        l.site_name, l.street_address_1, l.street_address_2, l.city, l.state, l.postal_code, l.country,
+                        c.company_name AS contractor_company_name,
+                        pm.first_name AS pm_first_name, pm.last_name AS pm_last_name, pm.email AS pm_email, pm.phone AS pm_phone
+                    FROM projects p
+                    LEFT JOIN locations l ON p.location_id = l.location_id
+                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                    LEFT JOIN contacts pm ON p.pm_contact_id = pm.contact_id
+                    WHERE p.stage IS NULL OR p.stage != 'Archived'
                 """)
                 for row in cursor.fetchall():
                     r_dict = dict(row)
@@ -671,13 +725,15 @@ def main(page: ft.Page):
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT 
-                        tbc_job_number, project_name, site_name, drive_id, stage,
-                        contractor_company_name, tbco_account_number, street_address_1,
-                        street_address_2, city, state, postal_code, country, pm_first_name,
-                        pm_last_name, pm_email, pm_phone, sales_rep_email, sales_rep_phone,
-                        team_code, photo_url
-                    FROM projects
-                    WHERE stage = 'Archived'
+                        p.tbc_job_number, p.project_name, p.drive_id, p.stage, p.location_id, p.tbco_account_number,
+                        l.site_name, l.street_address_1, l.street_address_2, l.city, l.state, l.postal_code, l.country,
+                        c.company_name AS contractor_company_name,
+                        pm.first_name AS pm_first_name, pm.last_name AS pm_last_name, pm.email AS pm_email, pm.phone AS pm_phone
+                    FROM projects p
+                    LEFT JOIN locations l ON p.location_id = l.location_id
+                    LEFT JOIN contractors c ON p.tbco_account_number = c.tbco_account_number
+                    LEFT JOIN contacts pm ON p.pm_contact_id = pm.contact_id
+                    WHERE p.stage = 'Archived'
                 """)
                 for row in cursor.fetchall():
                     r_dict = dict(row)
